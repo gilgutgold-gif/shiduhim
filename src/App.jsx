@@ -72,22 +72,45 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
   ];
 
   try {
-    // שינוי לגרסה יציבה יותר: gemini-1.5-flash
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents })
+      body: JSON.stringify({ 
+        contents,
+        // הוספת הגדרות בטיחות כדי למנוע חסימות שווא
+        safetySettings: [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+        ]
+      })
     });
 
     const data = await response.json();
     
-    // בדיקה מעמיקה יותר של שגיאות
     if (!response.ok) {
         console.error("Gemini API Error Details:", data);
         throw new Error(data.error?.message || `שגיאת שרת: ${response.status}`);
     }
     
-    const text = data.candidates[0].content.parts[0].text;
+    // בדיקה שהמודל החזיר תוכן ולא נחסם
+    if (!data.candidates || data.candidates.length === 0) {
+        console.warn("No candidates returned", data);
+        throw new Error("המודל לא החזיר תשובה (ייתכן שנחסם בגלל סינון תוכן מחמיר).");
+    }
+
+    const candidate = data.candidates[0];
+    // בדיקה אם המודל עצר בגלל בטיחות למרות הכל
+    if (candidate.finishReason === "SAFETY") {
+        throw new Error("התשובה נחסמה על ידי מסנני הבטיחות של גוגל.");
+    }
+
+    const text = candidate.content?.parts?.[0]?.text;
+    if (!text) {
+        throw new Error("התקבל מבנה תשובה לא תקין מהמודל.");
+    }
+
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
     let extractedJson = null;
     let cleanText = text;
@@ -279,9 +302,9 @@ export default function App() {
 
       } catch (err) {
           console.error(err);
-          // הצגת הודעת שגיאה מפורטת יותר למשתמש אם אפשר
-          const errorMsg = err.message.includes('API key') ? 'המפתח שהוזן שגוי. בדוק שאין רווחים מיותרים.' : 'הייתה שגיאה בתקשורת עם הבינה המלאכותית.';
-          setChatMessages(prev => [...prev, { role: 'model', content: `סליחה, ${errorMsg} (פרטים בקונסול)` }]);
+          // הצגת הודעת שגיאה ברורה למשתמש
+          const cleanError = err.message.replace('Error:', '').trim();
+          setChatMessages(prev => [...prev, { role: 'model', content: `⚠️ שגיאה: ${cleanError}` }]);
       } finally {
           setIsAiLoading(false);
       }
@@ -483,7 +506,7 @@ export default function App() {
         {/* --- VIEW: DATABASE --- */}
         {activeTab === 'database' && (
           <div className="space-y-8 animate-in fade-in duration-500">
-             {/* Search Bar (Same as before) */}
+             {/* Search Bar */}
              <div className="bg-white/80 backdrop-blur p-5 rounded-2xl shadow-sm border border-indigo-50 flex flex-wrap gap-4 items-end">
               <div className="flex-1 min-w-[240px]">
                 <label className="text-xs font-bold text-indigo-900 mb-2 block">חיפוש מהיר</label>
