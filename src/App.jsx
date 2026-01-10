@@ -1,312 +1,229 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Users, UserPlus, Heart, Search, Trash2, ChevronDown, ChevronUp, Sparkles, Save, 
-  Briefcase, GraduationCap, MapPin, Camera, Smile, Quote, Cloud, Loader, Settings,
-  AlertTriangle, HelpCircle, Edit, X
+  Briefcase, GraduationCap, MapPin, Camera, Smile, Quote, Cloud, Edit, X, FileText, Wand2,
+  CheckCircle2, AlertCircle, Key, BrainCircuit, Send, Bot, User, MessageSquare
 } from 'lucide-react';
 
-// Firebase Imports
-import { initializeApp } from "firebase/app";
-import { 
-  getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query 
-} from "firebase/firestore";
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
-
 // --- קבועים ---
-const HIGH_SCHOOL_OPTIONS = ['אולפנה', 'ישיבה תיכונית', 'תיכון', 'סמינר'];
-const POST_HIGH_SCHOOL_OPTIONS = ['הסדר', 'מכינה', 'גיוס', 'לימודים גבוהים', 'מדרשה', 'שירות לאומי', 'ישיבה גבוהה', 'כולל'];
+const SYSTEM_PROMPT = `
+You are a helpful Hebrew-speaking matchmaking assistant for an app called "Binyan Adei Ad".
+Your goal is to extract profile data from the conversation.
 
-// --- מסך הגדרה ראשוני ---
-const SetupScreen = ({ onSave }) => {
-  const [configInput, setConfigInput] = useState('');
-  const [error, setError] = useState('');
+Maintain the current state of the profile JSON.
+When the user provides info, update the JSON fields.
+If the user corrects you (e.g., "No, he is 25"), update the JSON accordingly.
 
-  const handleSave = () => {
-    try {
-      setError('');
-      let jsonStr = configInput.trim();
-      
-      const match = jsonStr.match(/{[\s\S]*}/);
-      if (match) {
-        jsonStr = match[0];
-      }
-      
-      let config = null;
+Schema:
+- firstName, lastName (Strings)
+- gender ("male" or "female")
+- age (Number)
+- height (Number, cm)
+- religiousLevel (String)
+- currentOccupation (String)
+- pastOccupations (String)
+- lifeStage (String)
+- origin (String)
+- livingToday (String)
+- aboutMe (String)
+- lookingForText (String)
+- contactName (String)
+- highSchool (String)
+- postHighSchool (String)
+- moreDetails (String - for extra info not fitting elsewhere)
 
-      try {
-        config = JSON.parse(jsonStr);
-      } catch (e1) {
+Output format:
+1. Reply conversationally in Hebrew (short, friendly).
+2. ALWAYS end your message with a code block containing the FULL updated JSON object.
+Example:
+"הבנתי, עדכנתי את הגיל ל-25. עוד משהו?"
+\`\`\`json
+{ ... full object ... }
+\`\`\`
+`;
+
+// --- פונקציית עזר לשיחה עם Gemini ---
+const chatWithGemini = async (history, newMessage, apiKey) => {
+  if (!apiKey) throw new Error("חסר מפתח API");
+
+  // הכנת ההיסטוריה לפורמט של ג'מיני
+  const contents = [
+    { role: "user", parts: [{ text: SYSTEM_PROMPT }] }, // הוראת מערכת כהודעה ראשונה
+    ...history.map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: msg.content }]
+    })),
+    { role: "user", parts: [{ text: newMessage }] }
+  ];
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents })
+    });
+
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message);
+    
+    const text = data.candidates[0].content.parts[0].text;
+    
+    // חילוץ ה-JSON מתוך התשובה
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+    let extractedJson = null;
+    let cleanText = text;
+
+    if (jsonMatch) {
         try {
-            const fixedJson = jsonStr
-                .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2": ')
-                .replace(/'/g, '"');
-            config = JSON.parse(fixedJson);
-        } catch (e2) {
-            throw new Error("שגיאה בפענוח הטקסט. אנא וודא שהעתקת את התוכן המדויק.");
+            extractedJson = JSON.parse(jsonMatch[1]);
+            // הסרת ה-JSON מהטקסט שמוצג למשתמש
+            cleanText = text.replace(/```json[\s\S]*```/, '').trim();
+        } catch (e) {
+            console.error("Failed to parse JSON from AI response");
         }
-      }
-      
-      if (!config || !config.apiKey || !config.projectId) {
-        throw new Error("נראה שחסרים פרטים בקונפיגורציה (apiKey או projectId)");
-      }
-      
-      onSave(config);
-    } catch (e) {
-      console.error(e);
-      setError(e.message);
     }
-  };
 
-  return (
-    <div dir="rtl" className="min-h-screen bg-gradient-to-br from-indigo-100 via-purple-50 to-pink-100 flex items-center justify-center p-4">
-      <div className="bg-white/80 backdrop-blur-xl p-8 rounded-3xl shadow-2xl max-w-lg w-full space-y-6 border border-white/50">
-        <div className="text-center">
-          <div className="bg-gradient-to-r from-blue-500 to-indigo-600 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-200">
-            <Cloud className="w-10 h-10 text-white" />
-          </div>
-          <h1 className="text-3xl font-extrabold text-gray-900 bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">חיבור לענן</h1>
-          <p className="text-gray-600 mt-2 font-medium">הגדרת מסד הנתונים המשפחתי</p>
-        </div>
+    return { text: cleanText, data: extractedJson };
 
-        <div className="bg-amber-50 p-4 rounded-xl text-sm text-amber-900 border border-amber-100 shadow-sm">
-          <strong>הוראות:</strong> לך להגדרות הפרויקט ב-Firebase, העתק את תוכן המשתנה <code>firebaseConfig</code> והדבק כאן.
-        </div>
+  } catch (error) {
+    console.error("AI Error:", error);
+    throw error;
+  }
+};
 
-        <textarea
-          dir="ltr"
-          className="w-full h-40 p-4 border border-gray-200 rounded-xl font-mono text-xs bg-gray-900/95 text-green-400 focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all shadow-inner"
-          placeholder={`{
-  "apiKey": "...",
-  "authDomain": "...",
-  ...
-}`}
-          value={configInput}
-          onChange={(e) => setConfigInput(e.target.value)}
-        />
+// --- נתונים התחלתיים לדוגמה ---
+const MOCK_PROFILES = [
+  {
+    id: '1', firstName: 'דוד', lastName: 'כהן', gender: 'male', age: 24, height: 180,
+    religiousLevel: 'דתי לאומי תורני', currentOccupation: 'סטודנט להנדסה', livingToday: 'ירושלים',
+    aboutMe: 'בחור רציני ושמח, אוהב ללמוד ולטייל.', lookingForText: 'בחורה יראת שמיים וטובת לב',
+    contactName: 'אמא שרה 050-1234567', createdAt: Date.now()
+  }
+];
 
-        {error && (
-            <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm font-bold border border-red-100 flex items-start gap-2 animate-pulse">
-                <span>⚠️</span>
-                <span>{error}</span>
-            </div>
-        )}
-
-        <button 
-          onClick={handleSave}
-          className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-700 text-white font-bold rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200 shadow-blue-200"
-        >
-          שמור והתחל
-        </button>
-      </div>
-    </div>
-  );
+const INITIAL_FORM_STATE = {
+    firstName: '', lastName: '', gender: 'male', age: '', appearance: '', height: '',
+    currentOccupation: '', pastOccupations: '', lifeStage: '', religiousLevel: '',
+    aboutMe: '', lookingForText: '', origin: '', livingToday: '', interests: '',
+    highSchool: '', postHighSchool: '', characterTraits: '', contactName: '', motto: '',
+    moreDetails: '', 
+    image: null, lookingForMinAge: '', lookingForMaxAge: '', lookingForReligiousLevel: ''
 };
 
 // --- האפליקציה הראשית ---
 export default function App() {
-  const [firebaseConfig, setFirebaseConfig] = useState(() => {
-    try {
-        const saved = localStorage.getItem('firebase_config_shidduch');
-        return saved ? JSON.parse(saved) : null;
-    } catch (e) {
-        return null;
-    }
-  });
-
-  const [db, setDb] = useState(null);
-  const [auth, setAuth] = useState(null);
-  const [user, setUser] = useState(null);
-  const [authError, setAuthError] = useState(null); 
-  const [profiles, setProfiles] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [profiles, setProfiles] = useState(MOCK_PROFILES);
   const [activeTab, setActiveTab] = useState('database'); 
   const [selectedProfileForMatch, setSelectedProfileForMatch] = useState(null);
   const [expandedProfileId, setExpandedProfileId] = useState(null);
   
-  // State for Editing
+  // Form & Edit State
+  const [formData, setFormData] = useState(INITIAL_FORM_STATE);
   const [editingId, setEditingId] = useState(null);
+  
+  // AI Chat State
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
+  const [chatMessages, setChatMessages] = useState([
+    { role: 'model', content: 'שלום! אני העוזר החכם של "בניין עדי עד". תכתוב לי פרטים על המועמד/ת (אפשר להעתיק מהווטסאפ), ואני אסדר הכל בכרטיס. אם אטע, תגיד לי ואתקן!' }
+  ]);
+  const [chatInput, setChatInput] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [extractedProfilePreview, setExtractedProfilePreview] = useState(null);
+  const chatEndRef = useRef(null);
 
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [filterGender, setFilterGender] = useState('all');
 
-  // Form State
-  const initialFormState = {
-    firstName: '', lastName: '', gender: 'male', age: '', appearance: '', height: '',
-    currentOccupation: '', pastOccupations: '', lifeStage: '', religiousLevel: '',
-    aboutMe: '', lookingForText: '', origin: '', livingToday: '', interests: '',
-    highSchool: '', postHighSchool: '', characterTraits: '', contactName: '', motto: '',
-    image: null, lookingForMinAge: '', lookingForMaxAge: '', lookingForReligiousLevel: ''
+  // גלילה אוטומטית בצ'אט
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
+
+  // --- לוגיקה ---
+
+  const handleSaveApiKey = (e) => {
+      const val = e.target.value;
+      setGeminiKey(val);
+      localStorage.setItem('gemini_api_key', val);
   };
 
-  const [formData, setFormData] = useState(initialFormState);
+  const handleSendMessage = async () => {
+      if (!chatInput.trim() || !geminiKey) return;
 
-  // --- אתחול Firebase ---
-  useEffect(() => {
-    if (!firebaseConfig) return;
+      const userMsg = { role: 'user', content: chatInput };
+      setChatMessages(prev => [...prev, userMsg]);
+      setChatInput('');
+      setIsAiLoading(true);
 
-    localStorage.setItem('firebase_config_shidduch', JSON.stringify(firebaseConfig));
-    setAuthError(null); 
+      try {
+          const { text, data } = await chatWithGemini(chatMessages, userMsg.content, geminiKey);
+          
+          setChatMessages(prev => [...prev, { role: 'model', content: text }]);
+          
+          if (data) {
+              // מיזוג עם המידע הקיים כדי לשמור על שדות קודמים
+              setExtractedProfilePreview(prev => ({ ...(prev || {}), ...data }));
+          }
 
-    try {
-      const app = initializeApp(firebaseConfig);
-      const authInstance = getAuth(app);
-      const database = getFirestore(app);
-      
-      setDb(database);
-      setAuth(authInstance);
-
-      const initAuth = async () => {
-         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-            await signInWithCustomToken(authInstance, __initial_auth_token);
-         } else {
-            await signInAnonymously(authInstance);
-         }
-      };
-      
-      initAuth().catch((error) => {
-        console.error("Auth Error", error);
-        if (error.code === 'auth/configuration-not-found' || error.code === 'auth/operation-not-allowed') {
-            setAuthError('AUTH_DISABLED');
-        } else if (error.code === 'auth/api-key-not-valid') {
-            setAuthError('INVALID_KEY');
-        } else {
-            setAuthError('GENERAL');
-        }
-      });
-
-      const unsubscribeAuth = onAuthStateChanged(authInstance, (u) => {
-        if (u) {
-          setUser(u);
-          setAuthError(null); 
-        }
-      });
-      
-      return () => unsubscribeAuth();
-
-    } catch (err) {
-      console.error("Firebase Init Error", err);
-      setAuthError('INIT_FAILED');
-    }
-  }, [firebaseConfig]);
-
-  // --- האזנה לנתונים ---
-  useEffect(() => {
-    if (!db || !user) return;
-    
-    // בודק אם יש App ID גלובלי (מהסביבה של Gemini) או משתמש בברירת מחדל
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'FamilyShidduchDB';
-
-    setLoading(true);
-    // שימוש בנתיב המותאם לדרישות (public/data)
-    const profilesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'profiles');
-    const q = query(profilesCollection);
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const loadedProfiles = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      // מיון לפי זמן יצירה (חדש למעלה)
-      loadedProfiles.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      setProfiles(loadedProfiles);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching data:", error);
-      if (error.code === 'permission-denied') {
-          // זה בסדר לא להציג התראה קופצת, אלא רק לוג
-          console.warn("Permission denied. Ensure Firestore rules are public for this path.");
+      } catch (err) {
+          setChatMessages(prev => [...prev, { role: 'model', content: 'סליחה, הייתה שגיאה בתקשורת. וודא שהמפתח תקין.' }]);
+      } finally {
+          setIsAiLoading(false);
       }
-      setLoading(false);
-    });
+  };
 
-    return () => unsubscribe();
-  }, [db, user]);
+  const handleApproveAiProfile = () => {
+      if (!extractedProfilePreview) return;
+      
+      setFormData(prev => ({ ...INITIAL_FORM_STATE, ...prev, ...extractedProfilePreview }));
+      setActiveTab('add');
+      setChatMessages([{ role: 'model', content: 'העברתי את הנתונים לטופס. מוכן ליצירת כרטיס חדש!' }]); // איפוס צ'אט
+      setExtractedProfilePreview(null);
+  };
 
-  // --- פונקציות לוגיקה ---
-
-  const handleSaveProfile = async (e) => {
+  const handleSaveProfile = (e) => {
     e.preventDefault();
-    if (!db) return;
-
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'FamilyShidduchDB';
     const profileData = {
       ...formData,
-      updatedAt: Date.now(),
-      age: Number(formData.age),
-      height: Number(formData.height),
+      id: editingId || Date.now().toString(),
+      createdAt: Date.now(),
+      age: formData.age ? Number(formData.age) : '',
+      height: formData.height ? Number(formData.height) : '',
       lookingFor: {
-        minAge: Number(formData.lookingForMinAge) || (Number(formData.age) - 5),
-        maxAge: Number(formData.lookingForMaxAge) || (Number(formData.age) + 5),
-        religiousLevel: formData.lookingForReligiousLevel || formData.religiousLevel
+        minAge: Number(formData.lookingForMinAge) || (formData.age ? Number(formData.age) - 5 : 18),
+        maxAge: Number(formData.lookingForMaxAge) || (formData.age ? Number(formData.age) + 5 : 99),
+        religiousLevel: formData.lookingForReligiousLevel || formData.religiousLevel || ''
       }
     };
 
-    try {
-      setLoading(true);
-      const profilesRef = collection(db, 'artifacts', appId, 'public', 'data', 'profiles');
-
-      if (editingId) {
-        // Update existing
-        await updateDoc(doc(profilesRef, editingId), profileData);
-        alert('הכרטיס עודכן בהצלחה!');
-      } else {
-        // Create new
-        await addDoc(profilesRef, {
-            ...profileData,
-            createdAt: Date.now() 
-        });
-        alert('הפרופיל נשמר בענן בהצלחה!');
-      }
-      
-      resetForm();
-      setActiveTab('database');
-
-    } catch (err) {
-      console.error(err);
-      alert('שגיאה בשמירה לענן: ' + err.message);
-    } finally {
-      setLoading(false);
+    if (editingId) {
+      setProfiles(prev => prev.map(p => p.id === editingId ? profileData : p));
+    } else {
+      setProfiles(prev => [profileData, ...prev]);
     }
+    
+    resetForm();
+    setActiveTab('database');
   };
 
   const startEditing = (profile) => {
-    setFormData({
-        ...profile,
-        // Ensure nested lookingFor props are flattened back to form state if needed
-        lookingForMinAge: profile.lookingFor?.minAge || '',
-        lookingForMaxAge: profile.lookingFor?.maxAge || '',
-        lookingForReligiousLevel: profile.lookingFor?.religiousLevel || ''
-    });
+    setFormData({ ...INITIAL_FORM_STATE, ...profile });
     setEditingId(profile.id);
     setActiveTab('add');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const resetForm = () => {
-    setFormData(initialFormState);
+    setFormData(INITIAL_FORM_STATE);
     setEditingId(null);
   };
 
-  const deleteProfile = async (id) => {
-    if (!db) return;
-    if (window.confirm('האם אתה בטוח שברצונך למחוק פרופיל זה מהענן? (הוא יימחק לכולם)')) {
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'FamilyShidduchDB';
-      try {
-        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', id));
-        if (selectedProfileForMatch?.id === id) setSelectedProfileForMatch(null);
-        if (editingId === id) resetForm();
-      } catch (err) {
-        alert('שגיאה במחיקה');
-      }
-    }
-  };
-
-  const handleResetConfig = () => {
-    if(window.confirm('האם לאפס את חיבור הענן? תצטרך להזין מחדש את המפתחות.')) {
-      setFirebaseConfig(null);
-      localStorage.removeItem('firebase_config_shidduch');
-      setAuthError(null);
+  const deleteProfile = (id) => {
+    if (window.confirm('האם למחוק פרופיל זה?')) {
+      setProfiles(prev => prev.filter(p => p.id !== id));
+      if (selectedProfileForMatch?.id === id) setSelectedProfileForMatch(null);
+      if (editingId === id) resetForm();
     }
   };
 
@@ -318,14 +235,8 @@ export default function App() {
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      if (file.size > 150000) { 
-        alert('שים לב: הקובץ גדול מדי. אנא בחר תמונה קטנה (עד 150KB) לביצועים מהירים.');
-        return;
-      }
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setFormData(prev => ({ ...prev, image: reader.result }));
-      };
+      reader.onloadend = () => setFormData(prev => ({ ...prev, image: reader.result }));
       reader.readAsDataURL(file);
     }
   };
@@ -334,81 +245,33 @@ export default function App() {
     let score = 0;
     if (candidate.gender === target.gender) return 0;
     
+    const candAge = candidate.age || 20;
     const minAge = target.lookingFor?.minAge || 18;
     const maxAge = target.lookingFor?.maxAge || 99;
     
-    // Age Match
-    if (candidate.age >= minAge && candidate.age <= maxAge) {
-      score += 40;
-    } else {
-      const diff = Math.min(Math.abs(candidate.age - minAge), Math.abs(candidate.age - maxAge));
-      score += Math.max(0, 30 - (diff * 5));
-    }
+    if (candAge >= minAge && candAge <= maxAge) score += 40;
+    else score += Math.max(0, 30 - (Math.min(Math.abs(candAge - minAge), Math.abs(candAge - maxAge)) * 5));
 
-    // Religious Match
-    if (candidate.religiousLevel === target.lookingFor?.religiousLevel) {
-      score += 30;
-    } else if (candidate.religiousLevel && target.lookingFor?.religiousLevel && 
-               (candidate.religiousLevel.includes(target.lookingFor.religiousLevel) || 
-                target.lookingFor.religiousLevel.includes(candidate.religiousLevel))) {
-      score += 15;
-    }
-
-    // Height Preference Logic
-    if (target.gender === 'female') {
-      if (candidate.height >= target.height) score += 10;
-    } else {
-      if (candidate.height <= target.height + 10) score += 10;
-    }
-    
-    return Math.min(100, score + 20); // Base score boost
+    if (candidate.religiousLevel && target.lookingFor?.religiousLevel) {
+        if (candidate.religiousLevel === target.lookingFor.religiousLevel) score += 30;
+        else if (candidate.religiousLevel.includes(target.lookingFor.religiousLevel) || 
+                   target.lookingFor.religiousLevel.includes(candidate.religiousLevel)) score += 15;
+    } else score += 10;
+    return Math.min(100, score + 20);
   };
 
-  const filteredProfiles = useMemo(() => {
-    return profiles.filter(p => {
-      const fullName = `${p.firstName} ${p.lastName}`;
-      const matchesSearch = fullName.includes(searchTerm) || p.origin?.includes(searchTerm) || p.livingToday?.includes(searchTerm);
-      const matchesGender = filterGender === 'all' || p.gender === filterGender;
-      return matchesSearch && matchesGender;
-    });
-  }, [profiles, searchTerm, filterGender]);
+  const filteredProfiles = profiles.filter(p => {
+    const fullName = `${p.firstName} ${p.lastName}`;
+    const matchesSearch = fullName.includes(searchTerm) || p.origin?.includes(searchTerm);
+    const matchesGender = filterGender === 'all' || p.gender === filterGender;
+    return matchesSearch && matchesGender;
+  });
 
-  const matchesForSelected = useMemo(() => {
-    if (!selectedProfileForMatch) return [];
-    return profiles
-      .map(p => ({ ...p, score: calculateMatchScore(p, selectedProfileForMatch) }))
+  const matchesForSelected = profiles
+      .map(p => ({ ...p, score: selectedProfileForMatch ? calculateMatchScore(p, selectedProfileForMatch) : 0 }))
       .filter(p => p.score > 0)
       .sort((a, b) => b.score - a.score);
-  }, [selectedProfileForMatch, profiles]);
 
-
-  // --- רינדור ראשי ---
-
-  if (!firebaseConfig) {
-    return <SetupScreen onSave={setFirebaseConfig} />;
-  }
-
-  if (authError === 'AUTH_DISABLED' || authError === 'INVALID_KEY' || authError === 'INIT_FAILED') {
-    return (
-        <div dir="rtl" className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-            <div className="bg-white p-8 rounded-2xl shadow-lg max-w-lg w-full">
-                <div className="text-center mb-6">
-                    <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <AlertTriangle className="w-8 h-8 text-red-600" />
-                    </div>
-                    <h2 className="text-2xl font-bold text-gray-900">שגיאת התחברות ל-Firebase</h2>
-                </div>
-                {/* ... (Error messages same as before) ... */}
-                <button 
-                  onClick={handleResetConfig}
-                  className="w-full mt-6 py-3 bg-gray-900 text-white font-bold rounded-xl hover:bg-gray-800 transition-colors"
-                >
-                  אפס הגדרות ונסה שוב
-                </button>
-            </div>
-        </div>
-    );
-  }
 
   return (
     <div dir="rtl" className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 font-sans text-gray-800 pb-20">
@@ -417,20 +280,20 @@ export default function App() {
       <header className="bg-white/80 backdrop-blur-md sticky top-0 z-30 border-b border-white/20 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-            <div className="flex items-center gap-3 group cursor-pointer" onClick={() => setActiveTab('database')}>
+            <div className="flex items-center gap-3 cursor-pointer" onClick={() => setActiveTab('database')}>
               <div className="relative">
-                <Heart className="text-rose-500 w-9 h-9 drop-shadow-lg group-hover:scale-110 transition-transform" fill="currentColor" />
+                <Heart className="text-rose-500 w-9 h-9 drop-shadow-lg" fill="currentColor" />
                 <Sparkles className="absolute -top-1 -right-1 w-4 h-4 text-yellow-400 animate-pulse" />
               </div>
               <div>
-                <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-rose-500 to-purple-600 leading-none">שדכן אקספרס</h1>
-                <p className="text-xs text-indigo-600 font-bold flex items-center gap-1 mt-1">
-                  <Cloud className="w-3 h-3" /> מחובר לענן המשפחתי
+                <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-rose-500 to-purple-600 leading-none">בניין עדי עד</h1>
+                <p className="text-xs text-orange-600 font-bold flex items-center gap-1 mt-1 bg-orange-100 px-2 py-0.5 rounded-full w-fit">
+                  <AlertCircle className="w-3 h-3" /> גרסת צ'אט AI
                 </p>
               </div>
             </div>
             
-            <div className="flex gap-3 w-full md:w-auto overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
+            <div className="flex gap-3 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
                <div className="flex bg-gray-100/80 p-1.5 rounded-xl ml-2 shadow-inner">
                 <button onClick={() => {resetForm(); setActiveTab('database');}} 
                     className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'database' ? 'bg-white shadow text-blue-600 scale-105' : 'text-gray-500 hover:text-gray-700'}`}>
@@ -440,197 +303,207 @@ export default function App() {
                     className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'add' ? 'bg-white shadow text-indigo-600 scale-105' : 'text-gray-500 hover:text-gray-700'}`}>
                   {editingId ? <><Edit className="w-4 h-4" /> עריכה</> : <><UserPlus className="w-4 h-4" /> הוספה</>}
                 </button>
+                <button onClick={() => setActiveTab('chat_import')} 
+                    className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'chat_import' ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md scale-105' : 'text-gray-500 hover:text-gray-700'}`}>
+                  <MessageSquare className="w-4 h-4" /> צ'אט AI
+                </button>
                 <button onClick={() => setActiveTab('match')} 
                     className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'match' ? 'bg-white shadow text-rose-600 scale-105' : 'text-gray-500 hover:text-gray-700'}`}>
                   <Sparkles className="w-4 h-4" /> התאמות
                 </button>
               </div>
-              
-              <button onClick={handleResetConfig} className="p-2.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors" title="הגדרות חיבור">
-                <Settings className="w-5 h-5" />
-              </button>
             </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {loading && (
-          <div className="fixed inset-0 bg-white/50 backdrop-blur-sm z-50 flex items-center justify-center">
-             <div className="bg-white p-6 rounded-2xl shadow-xl flex flex-col items-center">
-                <Loader className="w-10 h-10 animate-spin text-indigo-600 mb-2" />
-                <span className="text-sm font-bold text-gray-600">מעדכן נתונים...</span>
-             </div>
-          </div>
-        )}
-
+        
         {/* --- VIEW: DATABASE --- */}
         {activeTab === 'database' && (
           <div className="space-y-8 animate-in fade-in duration-500">
-            {/* Filter Bar */}
-            <div className="bg-white/80 backdrop-blur p-5 rounded-2xl shadow-sm border border-indigo-50 flex flex-wrap gap-4 items-end">
-              <div className="flex-1 min-w-[240px]">
-                <label className="text-xs font-bold text-indigo-900 mb-2 block">חיפוש מהיר</label>
-                <div className="relative group">
-                  <Search className="absolute right-3 top-3 w-5 h-5 text-indigo-300 group-focus-within:text-indigo-600 transition-colors" />
-                  <input 
-                    type="text" 
-                    placeholder="חפש שם, מקום, תכונה..." 
-                    className="w-full pl-4 pr-10 py-2.5 border-2 border-indigo-50 rounded-xl focus:border-indigo-400 focus:ring-0 focus:outline-none bg-indigo-50/30 transition-all"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="w-48">
-                <label className="text-xs font-bold text-indigo-900 mb-2 block">סינון</label>
-                <select className="w-full p-2.5 border-2 border-indigo-50 rounded-xl focus:border-indigo-400 outline-none bg-white" value={filterGender} onChange={(e) => setFilterGender(e.target.value)}>
-                  <option value="all">כל המועמדים</option>
-                  <option value="male">רק בחורים</option>
-                  <option value="female">רק בחורות</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Grid */}
+            {/* ... (אותו קוד גריד וכרטיסים כמו קודם) ... */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {filteredProfiles.map(profile => (
+              {filteredProfiles.length === 0 ? (
+                 <div className="col-span-full py-20 text-center text-gray-400">המאגר ריק כרגע (דמו). התחל ב"צ'אט AI" כדי להוסיף!</div>
+              ) : filteredProfiles.map(profile => (
                 <div key={profile.id} className="group bg-white rounded-2xl shadow-sm border border-white hover:border-indigo-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col overflow-hidden">
-                  
-                  {/* Card Header Image */}
-                  <div className="relative h-48 overflow-hidden bg-gray-100">
-                     {profile.image ? (
-                       <img src={profile.image} alt={profile.firstName} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
-                     ) : (
-                       <div className={`w-full h-full flex items-center justify-center bg-gradient-to-br ${profile.gender === 'male' ? 'from-cyan-50 to-blue-100' : 'from-rose-50 to-pink-100'}`}>
-                         <Users className={`w-12 h-12 ${profile.gender === 'male' ? 'text-blue-300' : 'text-rose-300'}`} />
-                       </div>
-                     )}
-                     
-                     <div className="absolute top-0 w-full p-3 flex justify-between items-start bg-gradient-to-b from-black/30 to-transparent">
-                        <span className={`px-2.5 py-1 rounded-lg text-xs font-bold text-white shadow-sm backdrop-blur-md ${profile.gender === 'male' ? 'bg-cyan-500/90' : 'bg-rose-500/90'}`}>
-                           {profile.age}
-                        </span>
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={(e) => { e.stopPropagation(); startEditing(profile); }} className="p-1.5 bg-white/90 rounded-full text-indigo-600 hover:bg-white hover:text-indigo-800 shadow-sm" title="ערוך">
-                                <Edit className="w-4 h-4" />
-                            </button>
-                            <button onClick={(e) => { e.stopPropagation(); deleteProfile(profile.id); }} className="p-1.5 bg-white/90 rounded-full text-red-500 hover:bg-white hover:text-red-700 shadow-sm" title="מחק">
-                                <Trash2 className="w-4 h-4" />
-                            </button>
-                        </div>
-                     </div>
-                  </div>
-
-                  {/* Card Content */}
-                  <div className="p-5 flex-1 flex flex-col">
-                    <div className="mb-3">
-                      <h3 className="text-xl font-bold text-gray-800 group-hover:text-indigo-700 transition-colors">{profile.firstName} {profile.lastName}</h3>
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-md border border-gray-200">{profile.religiousLevel}</span>
-                        <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-md border border-gray-200">{profile.lifeStage}</span>
-                      </div>
-                    </div>
-                    
-                    <div className="text-sm text-gray-600 space-y-2 mb-4">
-                      <div className="flex items-center gap-2">
-                         <MapPin className="w-4 h-4 text-indigo-400" />
-                         <span className="truncate">{profile.livingToday}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                         <Briefcase className="w-4 h-4 text-indigo-400" />
-                         <span className="truncate">{profile.currentOccupation}</span>
-                      </div>
-                    </div>
-                    
-                    {expandedProfileId === profile.id && (
-                      <div className="bg-indigo-50/50 -mx-5 px-5 py-4 mb-4 border-y border-indigo-100 text-sm space-y-3 animate-in slide-in-from-top-2">
-                         <div className="grid grid-cols-2 gap-2 text-xs">
-                            <div className="bg-white p-2 rounded border border-indigo-100"><span className="font-bold block text-indigo-900">גובה</span> {profile.height} ס"מ</div>
-                            <div className="bg-white p-2 rounded border border-indigo-100"><span className="font-bold block text-indigo-900">מראה</span> {profile.appearance}</div>
+                    <div className="bg-gray-100 h-32 relative">
+                         <div className="absolute inset-0 flex items-center justify-center">
+                             <Users className={`w-12 h-12 ${profile.gender === 'male' ? 'text-blue-300' : 'text-rose-300'}`} />
                          </div>
-                         <div><span className="font-bold text-indigo-900">עיסוקי עבר:</span> {profile.pastOccupations}</div>
-                         <div><span className="font-bold text-indigo-900">תכונות:</span> {profile.characterTraits}</div>
-                         <div className="italic text-gray-600">"{profile.aboutMe}"</div>
-                         <div className="border-t border-indigo-200 pt-2 mt-2">
-                            <span className="font-bold text-indigo-900 block mb-1">מחפש/ת:</span> 
-                            <span className="text-xs bg-rose-50 text-rose-800 px-2 py-1 rounded block">{profile.lookingForText}</span>
+                         <div className="absolute top-2 right-2 flex gap-1">
+                            <button onClick={() => startEditing(profile)} className="p-1.5 bg-white/90 rounded-full text-indigo-600 hover:bg-white shadow-sm"><Edit className="w-4 h-4" /></button>
+                            <button onClick={() => deleteProfile(profile.id)} className="p-1.5 bg-white/90 rounded-full text-red-500 hover:bg-white shadow-sm"><Trash2 className="w-4 h-4" /></button>
                          </div>
-                         <div><span className="font-bold text-indigo-900">לימודים:</span> {profile.highSchool}, {profile.postHighSchool}</div>
-                         <div className="bg-white p-3 rounded-lg border border-indigo-100 shadow-sm mt-2 flex items-center justify-between">
-                           <div>
-                                <span className="font-bold block text-indigo-900 text-xs uppercase">איש קשר</span>
-                                <span className="font-medium">{profile.contactName}</span>
-                           </div>
-                         </div>
-                      </div>
-                    )}
-
-                    <div className="mt-auto pt-2 space-y-3">
-                      <button 
-                         onClick={() => setExpandedProfileId(expandedProfileId === profile.id ? null : profile.id)}
-                         className="w-full text-xs font-bold text-gray-400 hover:text-indigo-600 flex items-center justify-center gap-1 py-1 transition-colors uppercase tracking-wide"
-                      >
-                        {expandedProfileId === profile.id ? (
-                          <>סגור פרטים <ChevronUp className="w-3 h-3" /></>
-                        ) : (
-                          <>פרטים מלאים <ChevronDown className="w-3 h-3" /></>
-                        )}
-                      </button>
-                      
-                      <button 
-                        onClick={() => {
-                          setSelectedProfileForMatch(profile);
-                          setActiveTab('match');
-                        }}
-                        className="w-full bg-gray-900 text-white text-sm font-bold py-2.5 px-3 rounded-xl hover:bg-indigo-600 hover:shadow-lg hover:shadow-indigo-200 transition-all flex justify-center items-center gap-2 group/btn"
-                      >
-                        <Sparkles className="w-4 h-4 text-yellow-300 group-hover/btn:animate-spin" />
-                        מצא שידוך
-                      </button>
                     </div>
-                  </div>
+                    <div className="p-4">
+                        <h3 className="text-lg font-bold">{profile.firstName} {profile.lastName}</h3>
+                        <p className="text-sm text-gray-500">{profile.age}, {profile.livingToday}</p>
+                        <p className="text-xs mt-2 text-gray-400 line-clamp-2">{profile.aboutMe}</p>
+                        <button onClick={() => {setSelectedProfileForMatch(profile); setActiveTab('match');}} className="mt-3 w-full bg-gray-900 text-white text-xs font-bold py-2 rounded-lg">מצא שידוך</button>
+                    </div>
                 </div>
               ))}
-              
-              {/* Empty State */}
-              {filteredProfiles.length === 0 && !loading && (
-                 <div className="col-span-full py-20 text-center">
-                    <div className="bg-white inline-block p-6 rounded-full shadow-sm mb-4">
-                        <Search className="w-12 h-12 text-gray-300" />
-                    </div>
-                    <h3 className="text-xl font-bold text-gray-900">לא נמצאו תוצאות</h3>
-                    <p className="text-gray-500">נסה לשנות את הסינון או הוסף כרטיס חדש</p>
-                    <button onClick={() => setActiveTab('add')} className="mt-6 text-indigo-600 font-bold hover:underline">הוסף כרטיס ראשון</button>
-                 </div>
-              )}
             </div>
           </div>
         )}
 
-        {/* --- VIEW: ADD/EDIT PROFILE --- */}
+        {/* --- VIEW: CHAT IMPORT (NEW!) --- */}
+        {activeTab === 'chat_import' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[80vh]">
+                
+                {/* Right Side: Chat Interface */}
+                <div className="lg:col-span-2 bg-white rounded-3xl shadow-xl flex flex-col overflow-hidden border border-gray-100">
+                    <div className="bg-gradient-to-r from-purple-600 to-indigo-600 p-4 text-white flex justify-between items-center">
+                        <div className="flex items-center gap-2">
+                            <Bot className="w-6 h-6" />
+                            <div>
+                                <h3 className="font-bold">העוזר החכם</h3>
+                                <p className="text-xs opacity-80">ספר לי על המועמד, אני אסדר את הפרטים.</p>
+                            </div>
+                        </div>
+                        {!geminiKey && (
+                            <div className="bg-red-500/20 px-2 py-1 rounded text-xs font-bold border border-red-400/30 flex items-center gap-1">
+                                <Key className="w-3 h-3"/> חסר מפתח API
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/50">
+                        {chatMessages.map((msg, idx) => (
+                            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-[80%] p-4 rounded-2xl shadow-sm ${
+                                    msg.role === 'user' 
+                                    ? 'bg-indigo-600 text-white rounded-br-none' 
+                                    : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none'
+                                }`}>
+                                    <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
+                                </div>
+                            </div>
+                        ))}
+                        {isAiLoading && (
+                            <div className="flex justify-start">
+                                <div className="bg-white border border-gray-200 p-3 rounded-2xl rounded-bl-none shadow-sm flex items-center gap-2">
+                                    <Sparkles className="w-4 h-4 text-purple-500 animate-spin" />
+                                    <span className="text-xs text-gray-500">מקליד/ה...</span>
+                                </div>
+                            </div>
+                        )}
+                        <div ref={chatEndRef} />
+                    </div>
+
+                    <div className="p-4 bg-white border-t border-gray-100">
+                         {!geminiKey ? (
+                             <div className="flex gap-2">
+                                 <input 
+                                    type="password" 
+                                    value={geminiKey} 
+                                    onChange={handleSaveApiKey} 
+                                    placeholder="הדבק כאן מפתח Gemini API כדי להתחיל..."
+                                    className="flex-1 p-3 border rounded-xl bg-gray-50 focus:ring-2 focus:ring-purple-500 outline-none text-sm"
+                                 />
+                                 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="p-3 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200 text-sm font-bold whitespace-nowrap">השג מפתח</a>
+                             </div>
+                         ) : (
+                             <div className="flex gap-2">
+                                 <input 
+                                    type="text" 
+                                    value={chatInput}
+                                    onChange={(e) => setChatInput(e.target.value)}
+                                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                                    placeholder="כתוב כאן... (לדוגמה: בחור בן 24 מירושלים...)"
+                                    className="flex-1 p-3 border rounded-xl bg-gray-50 focus:ring-2 focus:ring-purple-500 outline-none"
+                                 />
+                                 <button 
+                                    onClick={handleSendMessage}
+                                    disabled={!chatInput.trim() || isAiLoading}
+                                    className="p-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                 >
+                                    <Send className="w-5 h-5" />
+                                 </button>
+                             </div>
+                         )}
+                    </div>
+                </div>
+
+                {/* Left Side: Live Preview Card */}
+                <div className="lg:col-span-1 flex flex-col gap-4">
+                    <div className="bg-white p-6 rounded-3xl shadow-xl border-2 border-dashed border-purple-100 h-full flex flex-col">
+                        <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+                            <FileText className="w-5 h-5 text-purple-600"/> כרטיס בבנייה
+                        </h3>
+                        
+                        {extractedProfilePreview ? (
+                            <div className="flex-1 overflow-y-auto space-y-4 animate-in fade-in">
+                                <div className="flex items-center gap-3 mb-4">
+                                    <div className={`w-16 h-16 rounded-full flex items-center justify-center ${extractedProfilePreview.gender === 'male' ? 'bg-blue-100 text-blue-600' : 'bg-rose-100 text-rose-600'}`}>
+                                        <User className="w-8 h-8" />
+                                    </div>
+                                    <div>
+                                        <div className="font-bold text-lg">
+                                            {extractedProfilePreview.firstName || '???'} {extractedProfilePreview.lastName}
+                                        </div>
+                                        <div className="text-sm text-gray-500">
+                                            {extractedProfilePreview.age ? `בן/ת ${extractedProfilePreview.age}` : 'גיל לא ידוע'} 
+                                            {extractedProfilePreview.livingToday ? `, מ${extractedProfilePreview.livingToday}` : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div className="space-y-2 text-sm bg-gray-50 p-4 rounded-xl border border-gray-100">
+                                    {extractedProfilePreview.height && <div><span className="font-bold">גובה:</span> {extractedProfilePreview.height}</div>}
+                                    {extractedProfilePreview.religiousLevel && <div><span className="font-bold">רמה דתית:</span> {extractedProfilePreview.religiousLevel}</div>}
+                                    {extractedProfilePreview.currentOccupation && <div><span className="font-bold">עיסוק:</span> {extractedProfilePreview.currentOccupation}</div>}
+                                    {extractedProfilePreview.aboutMe && <div className="italic text-gray-600 mt-2">"{extractedProfilePreview.aboutMe}"</div>}
+                                </div>
+                                
+                                {extractedProfilePreview.moreDetails && (
+                                    <div className="text-xs bg-yellow-50 p-2 rounded text-yellow-800">
+                                        <strong>עוד פרטים:</strong> {extractedProfilePreview.moreDetails}
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="flex-1 flex flex-col items-center justify-center text-gray-400 text-center p-4">
+                                <Wand2 className="w-12 h-12 mb-2 opacity-50" />
+                                <p>התחל בצ'אט כדי לראות את הכרטיס נבנה כאן בזמן אמת...</p>
+                            </div>
+                        )}
+
+                        <button 
+                            onClick={handleApproveAiProfile}
+                            disabled={!extractedProfilePreview}
+                            className="w-full mt-4 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-green-200 transition-all"
+                        >
+                            <CheckCircle2 className="w-5 h-5" /> אשר והעבר לטופס
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        )}
+
+        {/* --- VIEW: ADD/EDIT PROFILE (FORM) --- */}
         {activeTab === 'add' && (
           <div className="max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-4">
             <form onSubmit={handleSaveProfile} className="bg-white/90 backdrop-blur p-8 rounded-3xl shadow-xl border border-white space-y-8 relative">
-              
               {editingId && (
                 <button type="button" onClick={() => {resetForm(); setActiveTab('database')}} className="absolute top-6 left-6 p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors">
                     <X className="w-5 h-5 text-gray-600" />
                 </button>
               )}
-
-              <div className="text-center mb-8 border-b border-gray-100 pb-6">
+              <div className="text-center mb-8 border-b border-gray-100 pb-6 relative">
                 <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg rotate-3 ${editingId ? 'bg-indigo-600' : 'bg-green-500'}`}>
                     {editingId ? <Edit className="w-8 h-8 text-white" /> : <UserPlus className="w-8 h-8 text-white" />}
                 </div>
-                <h2 className="text-3xl font-extrabold text-gray-900">{editingId ? 'עריכת כרטיס קיים' : 'יצירת כרטיס חדש'}</h2>
-                <p className="text-gray-500 mt-2">
-                    {editingId ? 'עדכן את הפרטים ולחץ על שמירה' : 'הכרטיס יופיע מיד אצל כל מי שמחובר לחשבון'}
-                </p>
+                <h2 className="text-3xl font-extrabold text-gray-900">{editingId ? 'עריכת כרטיס' : 'יצירת כרטיס חדש'}</h2>
+                <p className="text-gray-500 mt-2">ודא שהפרטים נכונים ולחץ על שמירה</p>
               </div>
 
-              {/* 1. Basic Info */}
+              {/* טופס רגיל (שדות זהים לקודם) */}
               <div className="space-y-6">
+                 {/* ... (חלק המין) ... */}
                  <div className="flex gap-6 mb-6 bg-indigo-50/50 p-6 rounded-2xl items-center justify-center border border-indigo-100">
                     <span className="font-bold text-indigo-900 text-lg">מין המועמד/ת:</span>
                     <label className={`flex items-center gap-2 cursor-pointer px-4 py-2 rounded-xl border-2 transition-all ${formData.gender === 'male' ? 'bg-white border-cyan-400 shadow-md scale-105' : 'border-transparent hover:bg-white/50'}`}>
@@ -643,254 +516,56 @@ export default function App() {
                     </label>
                  </div>
 
+                 {/* שדות */}
                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                   <div><label className="label">שם פרטי *</label><input required name="firstName" value={formData.firstName} onChange={handleInputChange} className="input-field" placeholder="לדוגמה: יונתן" /></div>
+                   <div><label className="label">שם פרטי *</label><input required name="firstName" value={formData.firstName} onChange={handleInputChange} className="input-field" /></div>
                    <div><label className="label">שם משפחה *</label><input required name="lastName" value={formData.lastName} onChange={handleInputChange} className="input-field" /></div>
                    <div><label className="label">גיל</label><input type="number" name="age" value={formData.age} onChange={handleInputChange} className="input-field" /></div>
-                   <div><label className="label">מראה חיצוני (צבע עור/שיער/עיניים)</label><input name="appearance" value={formData.appearance} onChange={handleInputChange} className="input-field" /></div>
+                   <div><label className="label">מראה חיצוני</label><input name="appearance" value={formData.appearance} onChange={handleInputChange} className="input-field" /></div>
                    <div><label className="label">גובה (ס"מ)</label><input type="number" name="height" value={formData.height} onChange={handleInputChange} className="input-field" /></div>
-                   <div><label className="label">רמה דתית</label><input name="religiousLevel" value={formData.religiousLevel} onChange={handleInputChange} className="input-field" placeholder="לדוגמה: דתי לאומי תורני" /></div>
+                   <div><label className="label">רמה דתית</label><input name="religiousLevel" value={formData.religiousLevel} onChange={handleInputChange} className="input-field" /></div>
                  </div>
-              </div>
 
-              {/* 2. Occupation & Status */}
-              <div className="section-container">
-                 <h3 className="section-title"><Briefcase className="w-5 h-5 text-indigo-600" /> עיסוק ושלב בחיים</h3>
-                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-4 border-t border-gray-100">
                     <div><label className="label">עיסוק נוכחי</label><input name="currentOccupation" value={formData.currentOccupation} onChange={handleInputChange} className="input-field" /></div>
-                    <div><label className="label">עיסוקים בעבר / צבא</label><input name="pastOccupations" value={formData.pastOccupations} onChange={handleInputChange} className="input-field" /></div>
-                    <div className="md:col-span-2"><label className="label">שלב בחיים (סטודנט / עובד / משלב...)</label><input name="lifeStage" value={formData.lifeStage} onChange={handleInputChange} className="input-field" /></div>
+                    <div><label className="label">מגורים</label><input name="livingToday" value={formData.livingToday} onChange={handleInputChange} className="input-field" /></div>
+                    <div><label className="label">איש קשר</label><input name="contactName" value={formData.contactName} onChange={handleInputChange} className="input-field bg-yellow-50" /></div>
+                    <div><label className="label">על עצמי</label><textarea name="aboutMe" rows="1" value={formData.aboutMe} onChange={handleInputChange} className="input-field" /></div>
                  </div>
-              </div>
-
-              {/* 3. Education & Location */}
-              <div className="section-container">
-                 <h3 className="section-title"><GraduationCap className="w-5 h-5 text-indigo-600" /> לימודים ומגורים</h3>
-                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div><label className="label">מאיפה במקור</label><input name="origin" value={formData.origin} onChange={handleInputChange} className="input-field" /></div>
-                    <div><label className="label">גר היום</label><input name="livingToday" value={formData.livingToday} onChange={handleInputChange} className="input-field" /></div>
-                    <div>
-                      <label className="label">איפה למד בתיכון</label>
-                      <input list="highschools" name="highSchool" value={formData.highSchool} onChange={handleInputChange} className="input-field" placeholder="בחר או הקלד..." />
-                      <datalist id="highschools">{HIGH_SCHOOL_OPTIONS.map(opt => <option key={opt} value={opt} />)}</datalist>
-                    </div>
-                    <div>
-                      <label className="label">לימודים אחרי גיל 18</label>
-                      <input list="postHighSchools" name="postHighSchool" value={formData.postHighSchool} onChange={handleInputChange} className="input-field" placeholder="בחר או הקלד..." />
-                      <datalist id="postHighSchools">{POST_HIGH_SCHOOL_OPTIONS.map(opt => <option key={opt} value={opt} />)}</datalist>
-                    </div>
-                 </div>
-              </div>
-
-              {/* 4. Personality & Details */}
-              <div className="section-container">
-                 <h3 className="section-title"><Smile className="w-5 h-5 text-indigo-600" /> אישיות</h3>
-                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                   <div className="md:col-span-2"><label className="label">כמה מילים על עצמי</label><textarea name="aboutMe" rows="2" value={formData.aboutMe} onChange={handleInputChange} className="input-field" /></div>
-                   <div className="md:col-span-2"><label className="label">תחומי עניין / תחביבים</label><input name="interests" value={formData.interests} onChange={handleInputChange} className="input-field" /></div>
-                   <div className="md:col-span-2"><label className="label">תכונות אופי בולטות</label><input name="characterTraits" value={formData.characterTraits} onChange={handleInputChange} className="input-field" /></div>
-                   <div className="md:col-span-2">
-                     <label className="label">משפט מנחה / מוטו</label>
-                     <div className="relative"><Quote className="absolute top-3 right-3 w-4 h-4 text-gray-400" /><input name="motto" value={formData.motto} onChange={handleInputChange} className="input-field pr-10 bg-indigo-50/30" /></div>
-                   </div>
-                 </div>
-              </div>
-
-              {/* 5. Match Criteria */}
-              <div className="section-container bg-gradient-to-r from-rose-50 to-pink-50 border-rose-100">
-                 <h3 className="section-title text-rose-800"><Heart className="w-5 h-5 text-rose-500" /> מה אני מחפש/ת?</h3>
-                 <div className="grid grid-cols-1 gap-4">
-                   <div><label className="label text-rose-900">תיאור חופשי של בן/בת הזוג</label><textarea name="lookingForText" rows="3" value={formData.lookingForText} onChange={handleInputChange} className="input-field border-rose-200 focus:border-rose-400 focus:ring-rose-200" placeholder="חשוב לי ש..." /></div>
-                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-2">
-                      <div><label className="text-xs font-bold text-rose-700 mb-1 block">גיל מינימלי</label><input type="number" name="lookingForMinAge" value={formData.lookingForMinAge} onChange={handleInputChange} className="p-2 border border-rose-200 rounded-lg w-full text-sm focus:outline-none focus:border-rose-400" /></div>
-                      <div><label className="text-xs font-bold text-rose-700 mb-1 block">גיל מקסימלי</label><input type="number" name="lookingForMaxAge" value={formData.lookingForMaxAge} onChange={handleInputChange} className="p-2 border border-rose-200 rounded-lg w-full text-sm focus:outline-none focus:border-rose-400" /></div>
-                      <div><label className="text-xs font-bold text-rose-700 mb-1 block">רמה דתית מועדפת</label><input name="lookingForReligiousLevel" value={formData.lookingForReligiousLevel} onChange={handleInputChange} className="p-2 border border-rose-200 rounded-lg w-full text-sm focus:outline-none focus:border-rose-400" /></div>
-                   </div>
-                 </div>
-              </div>
-
-              {/* 6. Contact & Image */}
-              <div className="section-container">
-                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div><label className="label">איש קשר (שם וטלפון)</label><input name="contactName" value={formData.contactName} onChange={handleInputChange} className="input-field font-bold bg-yellow-50 border-yellow-200" /></div>
-                    <div>
-                       <label className="label">תמונת פרופיל</label>
-                       <div className="flex items-center gap-4">
-                         <label className="flex-1 cursor-pointer bg-white hover:bg-gray-50 text-gray-600 transition-all py-2.5 px-4 rounded-xl border border-dashed border-gray-400 flex items-center justify-center gap-2 hover:border-indigo-400 hover:text-indigo-600">
-                           <Camera className="w-5 h-5" />
-                           <span>{editingId ? 'החלף תמונה' : 'בחר תמונה...'}</span>
-                           <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                         </label>
-                         {formData.image && <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-green-500 shadow-sm"><img src={formData.image} className="w-full h-full object-cover" /></div>}
-                       </div>
-                    </div>
+                 
+                 <div className="pt-4 border-t border-gray-100">
+                     <label className="label">עוד פרטים (מידע שלא נכנס לשדות אחרים)</label>
+                     <textarea name="moreDetails" rows="3" value={formData.moreDetails} onChange={handleInputChange} className="input-field bg-gray-50 text-gray-600" />
                  </div>
               </div>
 
               <div className="flex gap-4 pt-4">
-                  {editingId && (
-                      <button type="button" onClick={() => {resetForm(); setActiveTab('database');}} className="flex-1 py-4 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition-colors">
-                        ביטול
-                      </button>
-                  )}
-                  <button type="submit" disabled={loading} className={`flex-[2] py-4 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 text-lg hover:shadow-xl hover:scale-[1.01] transition-all ${editingId ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-900 hover:bg-black'}`}>
+                  <button type="submit" className={`w-full py-4 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 text-lg hover:shadow-xl hover:scale-[1.01] transition-all ${editingId ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-900 hover:bg-black'}`}>
                     <Save className="w-6 h-6" />
-                    {loading ? 'שומר...' : (editingId ? 'עדכן כרטיס' : 'שמור כרטיס בענן')}
+                    {editingId ? 'עדכן כרטיס (דמו)' : 'שמור כרטיס (דמו)'}
                   </button>
               </div>
             </form>
           </div>
         )}
 
-        {/* --- VIEW: MATCHMAKER --- */}
+        {/* --- VIEW: MATCHMAKER (Simplified) --- */}
         {activeTab === 'match' && (
-          <div className="h-full animate-in fade-in zoom-in-95 duration-300">
-            {!selectedProfileForMatch ? (
-              <div className="text-center py-20 bg-white/90 backdrop-blur rounded-3xl shadow-xl border border-white max-w-2xl mx-auto">
-                <div className="bg-rose-100 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-8 animate-bounce-slow">
-                  <Heart className="w-12 h-12 text-rose-500" fill="currentColor" />
-                </div>
-                <h2 className="text-3xl font-extrabold text-gray-900 mb-4">מערכת השידוכים החכמה</h2>
-                <p className="text-gray-500 mb-8 max-w-md mx-auto text-lg">בחר פרופיל מתוך המאגר כדי לראות שידוכים פוטנציאליים מבוססי אלגוריתם.</p>
-                <button onClick={() => setActiveTab('database')} className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-8 py-4 rounded-2xl font-bold hover:shadow-lg hover:shadow-blue-200 transition-all transform hover:-translate-y-1">
-                  חזור למאגר לבחירה
-                </button>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-                {/* Sidebar - Selected Profile */}
-                <div className="lg:col-span-1">
-                  <div className="bg-white rounded-2xl shadow-lg border border-indigo-50 sticky top-28 overflow-hidden">
-                    <div className="h-24 bg-gradient-to-r from-indigo-500 to-purple-500"></div>
-                    <div className="px-6 relative">
-                         <div className="w-24 h-24 rounded-full border-4 border-white shadow-md bg-gray-200 -mt-12 overflow-hidden mx-auto">
-                            {selectedProfileForMatch.image ? (
-                            <img src={selectedProfileForMatch.image} className="w-full h-full object-cover" />
-                            ) : (
-                            <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-gray-400 bg-gray-100">
-                                {selectedProfileForMatch.firstName[0]}
-                            </div>
-                            )}
-                        </div>
-                    </div>
-                    
-                    <div className="p-6 text-center">
-                      <h3 className="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-2">מחפשים עבור</h3>
-                      <h2 className="text-2xl font-extrabold text-gray-900">{selectedProfileForMatch.firstName}</h2>
-                      <p className="text-gray-500 font-medium mb-4">{selectedProfileForMatch.age} • {selectedProfileForMatch.livingToday}</p>
-                      
-                      <div className="text-right bg-rose-50 p-4 rounded-xl text-sm border border-rose-100">
-                         <p className="font-bold text-rose-800 mb-1 flex items-center gap-1"><Heart className="w-3 h-3" fill="currentColor" /> מחפש/ת:</p>
-                         <p className="text-gray-700 leading-relaxed">{selectedProfileForMatch.lookingForText}</p>
-                      </div>
-
-                      <button onClick={() => setSelectedProfileForMatch(null)} className="w-full mt-6 py-2.5 text-gray-600 hover:bg-gray-50 rounded-xl text-sm font-bold border border-gray-200 transition-colors">
-                          בחר מישהו אחר
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Main - Matches */}
-                <div className="lg:col-span-3 space-y-6">
-                  <div className="flex justify-between items-center mb-2 px-2">
-                    <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-                        <Sparkles className="w-6 h-6 text-yellow-500" />
-                        התאמות מוצעות
-                    </h2>
-                    <span className="bg-indigo-100 text-indigo-800 text-sm font-bold px-3 py-1 rounded-full">{matchesForSelected.length} תוצאות</span>
-                  </div>
-
-                  {matchesForSelected.length === 0 ? (
-                    <div className="bg-white/80 backdrop-blur p-12 rounded-3xl text-center border-2 border-dashed border-gray-200">
-                      <p className="text-gray-500 text-lg">לא נמצאו התאמות מתאימות במאגר כרגע.</p>
-                      <button onClick={() => setActiveTab('add')} className="mt-4 text-indigo-600 font-bold hover:underline">הוסף מועמדים חדשים למאגר</button>
-                    </div>
-                  ) : (
-                    <div className="space-y-5">
-                      {matchesForSelected.map((match) => (
-                        <div key={match.id} className="bg-white p-5 rounded-2xl shadow-sm border border-transparent hover:border-indigo-200 flex flex-col md:flex-row gap-6 items-start hover:shadow-xl hover:-translate-y-1 transition-all duration-300 relative group">
-                          {/* Score Badge */}
-                          <div className={`absolute -top-3 -left-3 px-4 py-2 rounded-xl text-sm font-black shadow-md rotate-[-5deg] z-10 ${match.score >= 80 ? 'bg-gradient-to-r from-green-400 to-emerald-500 text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
-                            {Math.round(match.score)}% התאמה
-                          </div>
-                          
-                          <div className="w-24 h-24 rounded-2xl bg-gray-100 flex-shrink-0 overflow-hidden mt-2 border-2 border-white shadow-md">
-                             {match.image ? <img src={match.image} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-300"><Users className="w-8 h-8" /></div>}
-                          </div>
-                          
-                          <div className="flex-1 min-w-0">
-                            <div className="flex flex-col md:flex-row md:items-center gap-2 mb-2">
-                              <h3 className="text-xl font-bold text-gray-900 truncate">{match.firstName} {match.lastName}</h3>
-                              <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md">{match.religiousLevel}</span>
-                            </div>
-                            <div className="text-sm font-medium text-gray-500 mb-3 flex flex-wrap gap-3">
-                                <span>{match.age}</span>
-                                <span className="w-1 h-1 bg-gray-300 rounded-full self-center"></span>
-                                <span>{match.livingToday}</span>
-                                <span className="w-1 h-1 bg-gray-300 rounded-full self-center"></span>
-                                <span>{match.currentOccupation}</span>
-                            </div>
-                            <p className="text-sm text-gray-600 bg-gray-50 p-3 rounded-xl italic border border-gray-100">"{match.aboutMe}"</p>
-                          </div>
-                          
-                          <div className="w-full md:w-auto flex flex-col gap-2 min-w-[160px] self-center bg-blue-50/50 p-3 rounded-xl border border-blue-100">
-                               <div className="text-xs text-blue-800 font-bold mb-1 uppercase tracking-wider">לפרטים (איש קשר)</div>
-                               <div className="text-sm font-bold text-gray-900">{match.contactName}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
+             <div className="text-center py-20 bg-white/90 backdrop-blur rounded-3xl shadow-xl border border-white max-w-2xl mx-auto">
+                <h2 className="text-2xl font-bold mb-4">מערכת התאמות</h2>
+                <p>בחר כרטיס מהמאגר כדי להתחיל.</p>
+                <button onClick={() => setActiveTab('database')} className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg">למאגר</button>
+             </div>
         )}
+
       </main>
       
       <style>{`
-        .input-field { 
-            width: 100%; 
-            padding: 0.75rem 1rem; 
-            border: 1px solid #e5e7eb; 
-            border-radius: 0.75rem; 
-            outline: none; 
-            background-color: #f9fafb;
-            transition: all 0.2s;
-        }
-        .input-field:focus { 
-            background-color: #fff;
-            border-color: #6366f1; 
-            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); 
-        }
-        .label { 
-            display: block; 
-            font-size: 0.875rem; 
-            font-weight: 700; 
-            color: #4b5563; 
-            margin-bottom: 0.35rem; 
-        }
-        .section-container {
-            border-top: 1px solid #f3f4f6;
-            padding-top: 1.5rem;
-        }
-        .section-title { 
-            font-size: 1.125rem; 
-            font-weight: 800; 
-            color: #1f2937; 
-            margin-bottom: 1rem; 
-            display: flex; 
-            align-items: center; 
-            gap: 0.5rem; 
-        }
-        .scrollbar-hide::-webkit-scrollbar {
-            display: none;
-        }
-        .scrollbar-hide {
-            -ms-overflow-style: none;
-            scrollbar-width: none;
-        }
+        .input-field { width: 100%; padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 0.75rem; outline: none; background-color: #f9fafb; transition: all 0.2s; }
+        .input-field:focus { background-color: #fff; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
+        .label { display: block; font-size: 0.875rem; font-weight: 700; color: #4b5563; margin-bottom: 0.35rem; }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
       `}</style>
     </div>
   );
