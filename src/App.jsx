@@ -58,7 +58,7 @@ const INITIAL_FORM_STATE = {
     image: null, lookingForMinAge: '', lookingForMaxAge: '', lookingForReligiousLevel: ''
 };
 
-// --- פונקציית עזר לשיחה עם Gemini ---
+// --- פונקציית עזר לשיחה עם Gemini (כולל גיבוי אוטומטי) ---
 const chatWithGemini = async (history, newMessage, apiKey) => {
   if (!apiKey) throw new Error("חסר מפתח API");
 
@@ -71,65 +71,79 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
     { role: "user", parts: [{ text: newMessage }] }
   ];
 
-  try {
-    // מנסים להשתמש ב-gemini-1.5-flash כי הוא המומלץ והמהיר ביותר כרגע
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        contents,
-        safetySettings: [
-            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-        ]
-      })
-    });
+  // רשימת מודלים לניסיון לפי סדר עדיפות
+  const modelsToTry = ["gemini-1.5-flash", "gemini-pro", "gemini-1.0-pro"];
+  
+  let lastError = null;
 
-    const data = await response.json();
-    
-    if (!response.ok) {
-        console.error("Gemini API Error Details:", data);
-        if (data.error?.message?.includes("not found")) {
-             throw new Error("המודל לא נמצא או שהמפתח לא תקין. נסה להחליף מפתח API.");
+  for (const model of modelsToTry) {
+      try {
+        console.log(`Trying model: ${model}...`);
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            contents,
+            safetySettings: [
+                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+            ]
+          })
+        });
+
+        const data = await response.json();
+        
+        if (!response.ok) {
+            // אם המודל לא נמצא (404), ננסה את הבא בתור
+            if (response.status === 404 || data.error?.message?.includes("not found")) {
+                console.warn(`Model ${model} not found, trying next...`);
+                continue; 
+            }
+            throw new Error(data.error?.message || `שגיאת שרת: ${response.status}`);
         }
-        throw new Error(data.error?.message || `שגיאת שרת: ${response.status}`);
-    }
-    
-    if (!data.candidates || data.candidates.length === 0) {
-        throw new Error("המודל לא החזיר תשובה (ייתכן שנחסם בגלל סינון תוכן).");
-    }
-
-    const candidate = data.candidates[0];
-    if (candidate.finishReason === "SAFETY") {
-        throw new Error("התשובה נחסמה על ידי מסנני הבטיחות.");
-    }
-
-    const text = candidate.content?.parts?.[0]?.text;
-    if (!text) {
-        throw new Error("התקבל מבנה תשובה לא תקין.");
-    }
-
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-    let extractedJson = null;
-    let cleanText = text;
-
-    if (jsonMatch) {
-        try {
-            extractedJson = JSON.parse(jsonMatch[1]);
-            cleanText = text.replace(/```json[\s\S]*```/, '').trim();
-        } catch (e) {
-            console.error("Failed to parse JSON");
+        
+        if (!data.candidates || data.candidates.length === 0) {
+            throw new Error("המודל לא החזיר תשובה (ייתכן שנחסם בגלל סינון תוכן).");
         }
-    }
 
-    return { text: cleanText, data: extractedJson };
+        const candidate = data.candidates[0];
+        if (candidate.finishReason === "SAFETY") {
+            throw new Error("התשובה נחסמה על ידי מסנני הבטיחות.");
+        }
 
-  } catch (error) {
-    console.error("AI Error:", error);
-    throw error;
+        const text = candidate.content?.parts?.[0]?.text;
+        if (!text) {
+            throw new Error("התקבל מבנה תשובה לא תקין.");
+        }
+
+        const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+        let extractedJson = null;
+        let cleanText = text;
+
+        if (jsonMatch) {
+            try {
+                extractedJson = JSON.parse(jsonMatch[1]);
+                cleanText = text.replace(/```json[\s\S]*```/, '').trim();
+            } catch (e) {
+                console.error("Failed to parse JSON");
+            }
+        }
+
+        return { text: cleanText, data: extractedJson };
+
+      } catch (error) {
+        console.error(`Error with model ${model}:`, error);
+        lastError = error;
+        // אם זו שגיאה שאינה 404, כנראה אין טעם לנסות מודלים אחרים (למשל מפתח שגוי)
+        if (!error.message.includes("not found") && !error.message.includes("404")) {
+            break;
+        }
+      }
   }
+
+  throw lastError || new Error("כל המודלים נכשלו. בדוק את המפתח.");
 };
 
 // --- מסך הגדרה ראשוני ---
