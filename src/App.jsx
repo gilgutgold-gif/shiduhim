@@ -72,12 +72,12 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
   ];
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+    // שינוי למודל gemini-pro (הגרסה היציבה ביותר שזמינה לכולם)
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         contents,
-        // הוספת הגדרות בטיחות כדי למנוע חסימות שווא
         safetySettings: [
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -91,6 +91,10 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
     
     if (!response.ok) {
         console.error("Gemini API Error Details:", data);
+        // טיפול ספציפי בשגיאת מודל לא נמצא
+        if (data.error?.message?.includes("not found")) {
+             throw new Error("המודל לא נמצא. נסה ליצור מפתח API חדש או לוודא שהפרויקט ב-Google Cloud פעיל.");
+        }
         throw new Error(data.error?.message || `שגיאת שרת: ${response.status}`);
     }
     
