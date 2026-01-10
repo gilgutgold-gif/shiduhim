@@ -72,8 +72,8 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
   ];
 
   try {
-    // שינוי למודל gemini-pro (הגרסה היציבה ביותר שזמינה לכולם)
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`, {
+    // מנסים להשתמש ב-gemini-1.5-flash כי הוא המומלץ והמהיר ביותר כרגע
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
@@ -91,28 +91,24 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
     
     if (!response.ok) {
         console.error("Gemini API Error Details:", data);
-        // טיפול ספציפי בשגיאת מודל לא נמצא
         if (data.error?.message?.includes("not found")) {
-             throw new Error("המודל לא נמצא. נסה ליצור מפתח API חדש או לוודא שהפרויקט ב-Google Cloud פעיל.");
+             throw new Error("המודל לא נמצא או שהמפתח לא תקין. נסה להחליף מפתח API.");
         }
         throw new Error(data.error?.message || `שגיאת שרת: ${response.status}`);
     }
     
-    // בדיקה שהמודל החזיר תוכן ולא נחסם
     if (!data.candidates || data.candidates.length === 0) {
-        console.warn("No candidates returned", data);
-        throw new Error("המודל לא החזיר תשובה (ייתכן שנחסם בגלל סינון תוכן מחמיר).");
+        throw new Error("המודל לא החזיר תשובה (ייתכן שנחסם בגלל סינון תוכן).");
     }
 
     const candidate = data.candidates[0];
-    // בדיקה אם המודל עצר בגלל בטיחות למרות הכל
     if (candidate.finishReason === "SAFETY") {
-        throw new Error("התשובה נחסמה על ידי מסנני הבטיחות של גוגל.");
+        throw new Error("התשובה נחסמה על ידי מסנני הבטיחות.");
     }
 
     const text = candidate.content?.parts?.[0]?.text;
     if (!text) {
-        throw new Error("התקבל מבנה תשובה לא תקין מהמודל.");
+        throw new Error("התקבל מבנה תשובה לא תקין.");
     }
 
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
@@ -124,7 +120,7 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
             extractedJson = JSON.parse(jsonMatch[1]);
             cleanText = text.replace(/```json[\s\S]*```/, '').trim();
         } catch (e) {
-            console.error("Failed to parse JSON from AI response");
+            console.error("Failed to parse JSON");
         }
     }
 
@@ -136,7 +132,7 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
   }
 };
 
-// --- מסך הגדרה ראשוני (Firebase Config) ---
+// --- מסך הגדרה ראשוני ---
 const SetupScreen = ({ onSave }) => {
   const [configInput, setConfigInput] = useState('');
   const [error, setError] = useState('');
@@ -190,33 +186,28 @@ export default function App() {
     } catch (e) { return null; }
   });
 
-  // Firebase State
   const [db, setDb] = useState(null);
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState(null); 
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  // UI State
   const [activeTab, setActiveTab] = useState('database'); 
   const [selectedProfileForMatch, setSelectedProfileForMatch] = useState(null);
   const [expandedProfileId, setExpandedProfileId] = useState(null);
   
-  // Form & Edit State
   const [formData, setFormData] = useState(INITIAL_FORM_STATE);
   const [editingId, setEditingId] = useState(null);
   
-  // AI Chat State
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
   const [chatMessages, setChatMessages] = useState([
-    { role: 'model', content: 'שלום! אני העוזר החכם של "בניין עדי עד". ספר לי על המועמד/ת ואני אצור כרטיס חדש בענן. כשתסיים, אשר את הכרטיס.' }
+    { role: 'model', content: 'שלום! אני העוזר החכם של "בניין עדי עד". ספר לי על המועמד/ת ואני אצור כרטיס חדש בענן.' }
   ]);
   const [chatInput, setChatInput] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [extractedProfilePreview, setExtractedProfilePreview] = useState(null);
   const chatEndRef = useRef(null);
 
-  // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [filterGender, setFilterGender] = useState('all');
 
@@ -241,7 +232,6 @@ export default function App() {
       };
       
       initAuth().catch((error) => {
-        console.error("Auth Error", error);
         setAuthError(error.code === 'auth/api-key-not-valid' ? 'INVALID_KEY' : 'GENERAL');
       });
 
@@ -253,7 +243,7 @@ export default function App() {
     } catch (err) { setAuthError('INIT_FAILED'); }
   }, [firebaseConfig]);
 
-  // --- סנכרון נתונים (Firestore) ---
+  // --- סנכרון נתונים ---
   useEffect(() => {
     if (!db || !user) return;
     
@@ -272,7 +262,6 @@ export default function App() {
     return () => unsubscribe();
   }, [db, user]);
 
-  // --- גלילה אוטומטית בצ'אט ---
   useEffect(() => {
     if (activeTab === 'chat_import') {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -287,6 +276,13 @@ export default function App() {
       localStorage.setItem('gemini_api_key', val);
   };
 
+  const handleResetApiKey = () => {
+      if (window.confirm('האם אתה בטוח שברצונך להחליף את מפתח ה-API?')) {
+          setGeminiKey('');
+          localStorage.removeItem('gemini_api_key');
+      }
+  };
+
   const handleSendMessage = async () => {
       if (!chatInput.trim() || !geminiKey) return;
 
@@ -297,16 +293,12 @@ export default function App() {
 
       try {
           const { text, data } = await chatWithGemini(chatMessages, userMsg.content, geminiKey);
-          
           setChatMessages(prev => [...prev, { role: 'model', content: text }]);
-          
           if (data) {
               setExtractedProfilePreview(prev => ({ ...(prev || {}), ...data }));
           }
-
       } catch (err) {
           console.error(err);
-          // הצגת הודעת שגיאה ברורה למשתמש
           const cleanError = err.message.replace('Error:', '').trim();
           setChatMessages(prev => [...prev, { role: 'model', content: `⚠️ שגיאה: ${cleanError}` }]);
       } finally {
@@ -316,7 +308,6 @@ export default function App() {
 
   const handleApproveAiProfile = () => {
       if (!extractedProfilePreview) return;
-      
       setFormData(prev => ({ ...INITIAL_FORM_STATE, ...prev, ...extractedProfilePreview }));
       setActiveTab('add');
       setChatMessages([{ role: 'model', content: 'העברתי את הנתונים לטופס. מוכן לשמירה בענן!' }]);
@@ -353,7 +344,6 @@ export default function App() {
       }
       resetForm();
       setActiveTab('database');
-
     } catch (err) { alert('שגיאה בשמירה לענן'); } finally { setLoading(false); }
   };
 
@@ -435,8 +425,6 @@ export default function App() {
       .sort((a, b) => b.score - a.score);
 
 
-  // --- רינדור ראשי ---
-
   if (!firebaseConfig) return <SetupScreen onSave={setFirebaseConfig} />;
 
   if (authError) {
@@ -510,7 +498,6 @@ export default function App() {
         {/* --- VIEW: DATABASE --- */}
         {activeTab === 'database' && (
           <div className="space-y-8 animate-in fade-in duration-500">
-             {/* Search Bar */}
              <div className="bg-white/80 backdrop-blur p-5 rounded-2xl shadow-sm border border-indigo-50 flex flex-wrap gap-4 items-end">
               <div className="flex-1 min-w-[240px]">
                 <label className="text-xs font-bold text-indigo-900 mb-2 block">חיפוש מהיר</label>
@@ -582,10 +569,14 @@ export default function App() {
                                 <p className="text-xs opacity-80">ספר לי על המועמד, אני אסדר את הפרטים.</p>
                             </div>
                         </div>
-                        {!geminiKey && (
+                        {!geminiKey ? (
                             <div className="bg-red-500/20 px-2 py-1 rounded text-xs font-bold border border-red-400/30 flex items-center gap-1">
                                 <Key className="w-3 h-3"/> חסר מפתח API
                             </div>
+                        ) : (
+                             <button onClick={handleResetApiKey} className="bg-white/20 hover:bg-white/30 px-2 py-1 rounded text-xs font-bold border border-white/30 flex items-center gap-1 transition-colors" title="החלף מפתח API">
+                                <Key className="w-3 h-3"/> החלף מפתח
+                            </button>
                         )}
                     </div>
 
