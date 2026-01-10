@@ -72,14 +72,20 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
   ];
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+    // שינוי לגרסה יציבה יותר: gemini-1.5-flash
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents })
     });
 
     const data = await response.json();
-    if (data.error) throw new Error(data.error.message);
+    
+    // בדיקה מעמיקה יותר של שגיאות
+    if (!response.ok) {
+        console.error("Gemini API Error Details:", data);
+        throw new Error(data.error?.message || `שגיאת שרת: ${response.status}`);
+    }
     
     const text = data.candidates[0].content.parts[0].text;
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
@@ -272,7 +278,10 @@ export default function App() {
           }
 
       } catch (err) {
-          setChatMessages(prev => [...prev, { role: 'model', content: 'סליחה, הייתה שגיאה בתקשורת. וודא שהמפתח תקין.' }]);
+          console.error(err);
+          // הצגת הודעת שגיאה מפורטת יותר למשתמש אם אפשר
+          const errorMsg = err.message.includes('API key') ? 'המפתח שהוזן שגוי. בדוק שאין רווחים מיותרים.' : 'הייתה שגיאה בתקשורת עם הבינה המלאכותית.';
+          setChatMessages(prev => [...prev, { role: 'model', content: `סליחה, ${errorMsg} (פרטים בקונסול)` }]);
       } finally {
           setIsAiLoading(false);
       }
