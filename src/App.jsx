@@ -1,9 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Users, UserPlus, Heart, Search, Trash2, ChevronDown, ChevronUp, Sparkles, Save, 
   Briefcase, GraduationCap, MapPin, Camera, Smile, Quote, Cloud, Edit, X, FileText, Wand2,
-  CheckCircle2, AlertCircle, Key, BrainCircuit, Send, Bot, User, MessageSquare
+  CheckCircle2, AlertCircle, Key, BrainCircuit, Send, Bot, User, MessageSquare, Loader, Settings
 } from 'lucide-react';
+
+// Firebase Imports
+import { initializeApp } from "firebase/app";
+import { 
+  getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query 
+} from "firebase/firestore";
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
 
 // --- קבועים ---
 const SYSTEM_PROMPT = `
@@ -42,13 +49,21 @@ Example:
 \`\`\`
 `;
 
+const INITIAL_FORM_STATE = {
+    firstName: '', lastName: '', gender: 'male', age: '', appearance: '', height: '',
+    currentOccupation: '', pastOccupations: '', lifeStage: '', religiousLevel: '',
+    aboutMe: '', lookingForText: '', origin: '', livingToday: '', interests: '',
+    highSchool: '', postHighSchool: '', characterTraits: '', contactName: '', motto: '',
+    moreDetails: '', 
+    image: null, lookingForMinAge: '', lookingForMaxAge: '', lookingForReligiousLevel: ''
+};
+
 // --- פונקציית עזר לשיחה עם Gemini ---
 const chatWithGemini = async (history, newMessage, apiKey) => {
   if (!apiKey) throw new Error("חסר מפתח API");
 
-  // הכנת ההיסטוריה לפורמט של ג'מיני
   const contents = [
-    { role: "user", parts: [{ text: SYSTEM_PROMPT }] }, // הוראת מערכת כהודעה ראשונה
+    { role: "user", parts: [{ text: SYSTEM_PROMPT }] },
     ...history.map(msg => ({
       role: msg.role === 'user' ? 'user' : 'model',
       parts: [{ text: msg.content }]
@@ -67,8 +82,6 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
     if (data.error) throw new Error(data.error.message);
     
     const text = data.candidates[0].content.parts[0].text;
-    
-    // חילוץ ה-JSON מתוך התשובה
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
     let extractedJson = null;
     let cleanText = text;
@@ -76,7 +89,6 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
     if (jsonMatch) {
         try {
             extractedJson = JSON.parse(jsonMatch[1]);
-            // הסרת ה-JSON מהטקסט שמוצג למשתמש
             cleanText = text.replace(/```json[\s\S]*```/, '').trim();
         } catch (e) {
             console.error("Failed to parse JSON from AI response");
@@ -91,28 +103,68 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
   }
 };
 
-// --- נתונים התחלתיים לדוגמה ---
-const MOCK_PROFILES = [
-  {
-    id: '1', firstName: 'דוד', lastName: 'כהן', gender: 'male', age: 24, height: 180,
-    religiousLevel: 'דתי לאומי תורני', currentOccupation: 'סטודנט להנדסה', livingToday: 'ירושלים',
-    aboutMe: 'בחור רציני ושמח, אוהב ללמוד ולטייל.', lookingForText: 'בחורה יראת שמיים וטובת לב',
-    contactName: 'אמא שרה 050-1234567', createdAt: Date.now()
-  }
-];
+// --- מסך הגדרה ראשוני (Firebase Config) ---
+const SetupScreen = ({ onSave }) => {
+  const [configInput, setConfigInput] = useState('');
+  const [error, setError] = useState('');
 
-const INITIAL_FORM_STATE = {
-    firstName: '', lastName: '', gender: 'male', age: '', appearance: '', height: '',
-    currentOccupation: '', pastOccupations: '', lifeStage: '', religiousLevel: '',
-    aboutMe: '', lookingForText: '', origin: '', livingToday: '', interests: '',
-    highSchool: '', postHighSchool: '', characterTraits: '', contactName: '', motto: '',
-    moreDetails: '', 
-    image: null, lookingForMinAge: '', lookingForMaxAge: '', lookingForReligiousLevel: ''
+  const handleSave = () => {
+    try {
+      setError('');
+      let jsonStr = configInput.trim();
+      const match = jsonStr.match(/{[\s\S]*}/);
+      if (match) jsonStr = match[0];
+      
+      let config = null;
+      try {
+        config = JSON.parse(jsonStr.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2": ').replace(/'/g, '"'));
+      } catch (e) {
+        throw new Error("שגיאה בפענוח ה-JSON.");
+      }
+      
+      if (!config || !config.apiKey) throw new Error("חסר apiKey בקונפיגורציה.");
+      onSave(config);
+    } catch (e) { setError(e.message); }
+  };
+
+  return (
+    <div dir="rtl" className="min-h-screen bg-gradient-to-br from-indigo-100 via-purple-50 to-pink-100 flex items-center justify-center p-4">
+      <div className="bg-white/80 backdrop-blur-xl p-8 rounded-3xl shadow-2xl max-w-lg w-full space-y-6">
+        <div className="text-center">
+            <h1 className="text-3xl font-extrabold text-indigo-700">חיבור לענן המשפחתי</h1>
+            <p className="text-gray-600 mt-2">אנא הזן את פרטי ה-Firebase כדי להתחיל.</p>
+        </div>
+        <textarea
+          dir="ltr"
+          className="w-full h-40 p-4 border rounded-xl font-mono text-xs bg-gray-900 text-green-400"
+          placeholder={`{ "apiKey": "...", "projectId": "..." }`}
+          value={configInput}
+          onChange={(e) => setConfigInput(e.target.value)}
+        />
+        {error && <div className="text-red-600 text-sm font-bold">{error}</div>}
+        <button onClick={handleSave} className="w-full py-4 bg-indigo-600 text-white font-bold rounded-xl">התחבר</button>
+      </div>
+    </div>
+  );
 };
 
 // --- האפליקציה הראשית ---
 export default function App() {
-  const [profiles, setProfiles] = useState(MOCK_PROFILES);
+  const [firebaseConfig, setFirebaseConfig] = useState(() => {
+    try {
+        const saved = localStorage.getItem('firebase_config_shidduch');
+        return saved ? JSON.parse(saved) : null;
+    } catch (e) { return null; }
+  });
+
+  // Firebase State
+  const [db, setDb] = useState(null);
+  const [user, setUser] = useState(null);
+  const [authError, setAuthError] = useState(null); 
+  const [profiles, setProfiles] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  // UI State
   const [activeTab, setActiveTab] = useState('database'); 
   const [selectedProfileForMatch, setSelectedProfileForMatch] = useState(null);
   const [expandedProfileId, setExpandedProfileId] = useState(null);
@@ -124,7 +176,7 @@ export default function App() {
   // AI Chat State
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
   const [chatMessages, setChatMessages] = useState([
-    { role: 'model', content: 'שלום! אני העוזר החכם של "בניין עדי עד". תכתוב לי פרטים על המועמד/ת (אפשר להעתיק מהווטסאפ), ואני אסדר הכל בכרטיס. אם אטע, תגיד לי ואתקן!' }
+    { role: 'model', content: 'שלום! אני העוזר החכם של "בניין עדי עד". ספר לי על המועמד/ת ואני אצור כרטיס חדש בענן. כשתסיים, אשר את הכרטיס.' }
   ]);
   const [chatInput, setChatInput] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -135,10 +187,64 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterGender, setFilterGender] = useState('all');
 
-  // גלילה אוטומטית בצ'אט
+  // --- אתחול Firebase ---
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+    if (!firebaseConfig) return;
+    localStorage.setItem('firebase_config_shidduch', JSON.stringify(firebaseConfig));
+    setAuthError(null); 
+
+    try {
+      const app = initializeApp(firebaseConfig);
+      const authInstance = getAuth(app);
+      const database = getFirestore(app);
+      setDb(database);
+
+      const initAuth = async () => {
+         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await signInWithCustomToken(authInstance, __initial_auth_token);
+         } else {
+            await signInAnonymously(authInstance);
+         }
+      };
+      
+      initAuth().catch((error) => {
+        console.error("Auth Error", error);
+        setAuthError(error.code === 'auth/api-key-not-valid' ? 'INVALID_KEY' : 'GENERAL');
+      });
+
+      const unsubscribeAuth = onAuthStateChanged(authInstance, (u) => {
+        if (u) setUser(u);
+      });
+      return () => unsubscribeAuth();
+
+    } catch (err) { setAuthError('INIT_FAILED'); }
+  }, [firebaseConfig]);
+
+  // --- סנכרון נתונים (Firestore) ---
+  useEffect(() => {
+    if (!db || !user) return;
+    
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'FamilyShidduchDB';
+    setLoading(true);
+    const profilesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'profiles');
+    const q = query(profilesCollection);
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedProfiles = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      loadedProfiles.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setProfiles(loadedProfiles);
+      setLoading(false);
+    }, () => setLoading(false));
+
+    return () => unsubscribe();
+  }, [db, user]);
+
+  // --- גלילה אוטומטית בצ'אט ---
+  useEffect(() => {
+    if (activeTab === 'chat_import') {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, activeTab]);
 
   // --- לוגיקה ---
 
@@ -162,7 +268,6 @@ export default function App() {
           setChatMessages(prev => [...prev, { role: 'model', content: text }]);
           
           if (data) {
-              // מיזוג עם המידע הקיים כדי לשמור על שדות קודמים
               setExtractedProfilePreview(prev => ({ ...(prev || {}), ...data }));
           }
 
@@ -178,16 +283,18 @@ export default function App() {
       
       setFormData(prev => ({ ...INITIAL_FORM_STATE, ...prev, ...extractedProfilePreview }));
       setActiveTab('add');
-      setChatMessages([{ role: 'model', content: 'העברתי את הנתונים לטופס. מוכן ליצירת כרטיס חדש!' }]); // איפוס צ'אט
+      setChatMessages([{ role: 'model', content: 'העברתי את הנתונים לטופס. מוכן לשמירה בענן!' }]);
       setExtractedProfilePreview(null);
   };
 
-  const handleSaveProfile = (e) => {
+  const handleSaveProfile = async (e) => {
     e.preventDefault();
+    if (!db) return;
+
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'FamilyShidduchDB';
     const profileData = {
       ...formData,
-      id: editingId || Date.now().toString(),
-      createdAt: Date.now(),
+      updatedAt: Date.now(),
       age: formData.age ? Number(formData.age) : '',
       height: formData.height ? Number(formData.height) : '',
       lookingFor: {
@@ -197,14 +304,21 @@ export default function App() {
       }
     };
 
-    if (editingId) {
-      setProfiles(prev => prev.map(p => p.id === editingId ? profileData : p));
-    } else {
-      setProfiles(prev => [profileData, ...prev]);
-    }
-    
-    resetForm();
-    setActiveTab('database');
+    try {
+      setLoading(true);
+      const profilesRef = collection(db, 'artifacts', appId, 'public', 'data', 'profiles');
+
+      if (editingId) {
+        await updateDoc(doc(profilesRef, editingId), profileData);
+        alert('הכרטיס עודכן בענן!');
+      } else {
+        await addDoc(profilesRef, { ...profileData, createdAt: Date.now() });
+        alert('הכרטיס נוצר בענן בהצלחה!');
+      }
+      resetForm();
+      setActiveTab('database');
+
+    } catch (err) { alert('שגיאה בשמירה לענן'); } finally { setLoading(false); }
   };
 
   const startEditing = (profile) => {
@@ -219,11 +333,23 @@ export default function App() {
     setEditingId(null);
   };
 
-  const deleteProfile = (id) => {
-    if (window.confirm('האם למחוק פרופיל זה?')) {
-      setProfiles(prev => prev.filter(p => p.id !== id));
-      if (selectedProfileForMatch?.id === id) setSelectedProfileForMatch(null);
-      if (editingId === id) resetForm();
+  const deleteProfile = async (id) => {
+    if (!db) return;
+    if (window.confirm('האם למחוק פרופיל זה מהענן?')) {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'FamilyShidduchDB';
+      try {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', id));
+        if (selectedProfileForMatch?.id === id) setSelectedProfileForMatch(null);
+        if (editingId === id) resetForm();
+      } catch (err) { alert('שגיאה במחיקה'); }
+    }
+  };
+
+  const handleResetConfig = () => {
+    if(window.confirm('האם לאפס את חיבור הענן?')) {
+      setFirebaseConfig(null);
+      localStorage.removeItem('firebase_config_shidduch');
+      setAuthError(null);
     }
   };
 
@@ -273,6 +399,22 @@ export default function App() {
       .sort((a, b) => b.score - a.score);
 
 
+  // --- רינדור ראשי ---
+
+  if (!firebaseConfig) return <SetupScreen onSave={setFirebaseConfig} />;
+
+  if (authError) {
+    return (
+        <div dir="rtl" className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+            <div className="bg-white p-8 rounded-2xl shadow-lg max-w-lg w-full text-center">
+                <AlertCircle className="w-12 h-12 text-red-600 mx-auto mb-4" />
+                <h2 className="text-2xl font-bold text-gray-900">שגיאת התחברות ל-Firebase</h2>
+                <button onClick={handleResetConfig} className="w-full mt-6 py-3 bg-gray-900 text-white font-bold rounded-xl">אפס הגדרות</button>
+            </div>
+        </div>
+    );
+  }
+
   return (
     <div dir="rtl" className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 font-sans text-gray-800 pb-20">
       
@@ -287,8 +429,8 @@ export default function App() {
               </div>
               <div>
                 <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-rose-500 to-purple-600 leading-none">בניין עדי עד</h1>
-                <p className="text-xs text-orange-600 font-bold flex items-center gap-1 mt-1 bg-orange-100 px-2 py-0.5 rounded-full w-fit">
-                  <AlertCircle className="w-3 h-3" /> גרסת צ'אט AI
+                <p className="text-xs text-indigo-600 font-bold flex items-center gap-1 mt-1">
+                  <Cloud className="w-3 h-3" /> מחובר לענן המשפחתי
                 </p>
               </div>
             </div>
@@ -312,6 +454,7 @@ export default function App() {
                   <Sparkles className="w-4 h-4" /> התאמות
                 </button>
               </div>
+              <button onClick={handleResetConfig} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full"><Settings className="w-5 h-5"/></button>
             </div>
           </div>
         </div>
@@ -319,19 +462,59 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 py-8">
         
+        {loading && (
+          <div className="fixed inset-0 bg-white/50 backdrop-blur-sm z-50 flex items-center justify-center">
+             <div className="bg-white p-6 rounded-2xl shadow-xl flex flex-col items-center">
+                <Loader className="w-10 h-10 animate-spin text-indigo-600 mb-2" />
+                <span className="text-sm font-bold text-gray-600">טוען נתונים מהענן...</span>
+             </div>
+          </div>
+        )}
+
         {/* --- VIEW: DATABASE --- */}
         {activeTab === 'database' && (
           <div className="space-y-8 animate-in fade-in duration-500">
-            {/* ... (אותו קוד גריד וכרטיסים כמו קודם) ... */}
+             {/* Search Bar (Same as before) */}
+             <div className="bg-white/80 backdrop-blur p-5 rounded-2xl shadow-sm border border-indigo-50 flex flex-wrap gap-4 items-end">
+              <div className="flex-1 min-w-[240px]">
+                <label className="text-xs font-bold text-indigo-900 mb-2 block">חיפוש מהיר</label>
+                <div className="relative group">
+                  <Search className="absolute right-3 top-3 w-5 h-5 text-indigo-300 group-focus-within:text-indigo-600 transition-colors" />
+                  <input 
+                    type="text" 
+                    placeholder="חפש שם, מקום, פרטים נוספים..." 
+                    className="w-full pl-4 pr-10 py-2.5 border-2 border-indigo-50 rounded-xl focus:border-indigo-400 focus:ring-0 focus:outline-none bg-indigo-50/30 transition-all"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="w-48">
+                <label className="text-xs font-bold text-indigo-900 mb-2 block">סינון</label>
+                <select className="w-full p-2.5 border-2 border-indigo-50 rounded-xl focus:border-indigo-400 outline-none bg-white" value={filterGender} onChange={(e) => setFilterGender(e.target.value)}>
+                  <option value="all">הכל</option>
+                  <option value="male">בחורים</option>
+                  <option value="female">בחורות</option>
+                </select>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {filteredProfiles.length === 0 ? (
-                 <div className="col-span-full py-20 text-center text-gray-400">המאגר ריק כרגע (דמו). התחל ב"צ'אט AI" כדי להוסיף!</div>
+              {filteredProfiles.length === 0 && !loading ? (
+                 <div className="col-span-full py-20 text-center text-gray-400">
+                    <Cloud className="w-16 h-16 mx-auto mb-4 text-gray-200" />
+                    המאגר ריק כרגע. התחל ב"צ'אט AI" או ב"הוספה" כדי למלא אותו!
+                 </div>
               ) : filteredProfiles.map(profile => (
                 <div key={profile.id} className="group bg-white rounded-2xl shadow-sm border border-white hover:border-indigo-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col overflow-hidden">
                     <div className="bg-gray-100 h-32 relative">
-                         <div className="absolute inset-0 flex items-center justify-center">
-                             <Users className={`w-12 h-12 ${profile.gender === 'male' ? 'text-blue-300' : 'text-rose-300'}`} />
-                         </div>
+                         {profile.image ? (
+                             <img src={profile.image} className="w-full h-full object-cover" />
+                         ) : (
+                             <div className="absolute inset-0 flex items-center justify-center">
+                                 <Users className={`w-12 h-12 ${profile.gender === 'male' ? 'text-blue-300' : 'text-rose-300'}`} />
+                             </div>
+                         )}
                          <div className="absolute top-2 right-2 flex gap-1">
                             <button onClick={() => startEditing(profile)} className="p-1.5 bg-white/90 rounded-full text-indigo-600 hover:bg-white shadow-sm"><Edit className="w-4 h-4" /></button>
                             <button onClick={() => deleteProfile(profile.id)} className="p-1.5 bg-white/90 rounded-full text-red-500 hover:bg-white shadow-sm"><Trash2 className="w-4 h-4" /></button>
@@ -339,9 +522,9 @@ export default function App() {
                     </div>
                     <div className="p-4">
                         <h3 className="text-lg font-bold">{profile.firstName} {profile.lastName}</h3>
-                        <p className="text-sm text-gray-500">{profile.age}, {profile.livingToday}</p>
+                        <p className="text-sm text-gray-500">{profile.age} {profile.livingToday && `, ${profile.livingToday}`}</p>
                         <p className="text-xs mt-2 text-gray-400 line-clamp-2">{profile.aboutMe}</p>
-                        <button onClick={() => {setSelectedProfileForMatch(profile); setActiveTab('match');}} className="mt-3 w-full bg-gray-900 text-white text-xs font-bold py-2 rounded-lg">מצא שידוך</button>
+                        <button onClick={() => {setSelectedProfileForMatch(profile); setActiveTab('match');}} className="mt-3 w-full bg-gray-900 text-white text-xs font-bold py-2 rounded-lg hover:bg-black transition-colors">מצא שידוך</button>
                     </div>
                 </div>
               ))}
@@ -349,7 +532,7 @@ export default function App() {
           </div>
         )}
 
-        {/* --- VIEW: CHAT IMPORT (NEW!) --- */}
+        {/* --- VIEW: CHAT IMPORT --- */}
         {activeTab === 'chat_import' && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[80vh]">
                 
@@ -359,7 +542,7 @@ export default function App() {
                         <div className="flex items-center gap-2">
                             <Bot className="w-6 h-6" />
                             <div>
-                                <h3 className="font-bold">העוזר החכם</h3>
+                                <h3 className="font-bold">העוזר החכם (מחובר לענן)</h3>
                                 <p className="text-xs opacity-80">ספר לי על המועמד, אני אסדר את הפרטים.</p>
                             </div>
                         </div>
@@ -480,7 +663,6 @@ export default function App() {
                         </button>
                     </div>
                 </div>
-
             </div>
         )}
 
@@ -498,12 +680,10 @@ export default function App() {
                     {editingId ? <Edit className="w-8 h-8 text-white" /> : <UserPlus className="w-8 h-8 text-white" />}
                 </div>
                 <h2 className="text-3xl font-extrabold text-gray-900">{editingId ? 'עריכת כרטיס' : 'יצירת כרטיס חדש'}</h2>
-                <p className="text-gray-500 mt-2">ודא שהפרטים נכונים ולחץ על שמירה</p>
               </div>
 
-              {/* טופס רגיל (שדות זהים לקודם) */}
+              {/* טופס (זהה לגרסאות קודמות) */}
               <div className="space-y-6">
-                 {/* ... (חלק המין) ... */}
                  <div className="flex gap-6 mb-6 bg-indigo-50/50 p-6 rounded-2xl items-center justify-center border border-indigo-100">
                     <span className="font-bold text-indigo-900 text-lg">מין המועמד/ת:</span>
                     <label className={`flex items-center gap-2 cursor-pointer px-4 py-2 rounded-xl border-2 transition-all ${formData.gender === 'male' ? 'bg-white border-cyan-400 shadow-md scale-105' : 'border-transparent hover:bg-white/50'}`}>
@@ -516,7 +696,6 @@ export default function App() {
                     </label>
                  </div>
 
-                 {/* שדות */}
                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                    <div><label className="label">שם פרטי *</label><input required name="firstName" value={formData.firstName} onChange={handleInputChange} className="input-field" /></div>
                    <div><label className="label">שם משפחה *</label><input required name="lastName" value={formData.lastName} onChange={handleInputChange} className="input-field" /></div>
@@ -540,21 +719,40 @@ export default function App() {
               </div>
 
               <div className="flex gap-4 pt-4">
-                  <button type="submit" className={`w-full py-4 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 text-lg hover:shadow-xl hover:scale-[1.01] transition-all ${editingId ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-900 hover:bg-black'}`}>
+                  <button type="submit" disabled={loading} className={`w-full py-4 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 text-lg hover:shadow-xl hover:scale-[1.01] transition-all ${editingId ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-900 hover:bg-black'}`}>
                     <Save className="w-6 h-6" />
-                    {editingId ? 'עדכן כרטיס (דמו)' : 'שמור כרטיס (דמו)'}
+                    {loading ? 'שומר בענן...' : (editingId ? 'עדכן כרטיס' : 'שמור כרטיס בענן')}
                   </button>
               </div>
             </form>
           </div>
         )}
 
-        {/* --- VIEW: MATCHMAKER (Simplified) --- */}
+        {/* --- VIEW: MATCHMAKER --- */}
         {activeTab === 'match' && (
              <div className="text-center py-20 bg-white/90 backdrop-blur rounded-3xl shadow-xl border border-white max-w-2xl mx-auto">
-                <h2 className="text-2xl font-bold mb-4">מערכת התאמות</h2>
-                <p>בחר כרטיס מהמאגר כדי להתחיל.</p>
-                <button onClick={() => setActiveTab('database')} className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg">למאגר</button>
+                {selectedProfileForMatch ? (
+                    <div className="space-y-4">
+                        <h2 className="text-2xl font-bold">מחפש שידוכים עבור: {selectedProfileForMatch.firstName}</h2>
+                        <div className="grid gap-4 text-left">
+                            {matchesForSelected.map(match => (
+                                <div key={match.id} className="bg-gray-50 p-4 rounded-xl flex justify-between items-center border border-gray-200">
+                                    <div>
+                                        <div className="font-bold">{match.firstName} {match.lastName} ({match.age})</div>
+                                        <div className="text-sm text-gray-500">{match.religiousLevel}</div>
+                                    </div>
+                                    <div className="text-green-600 font-bold">{Math.round(match.score)}%</div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                ) : (
+                    <>
+                        <h2 className="text-2xl font-bold mb-4">מערכת התאמות</h2>
+                        <p>בחר כרטיס מהמאגר כדי להתחיל.</p>
+                        <button onClick={() => setActiveTab('database')} className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg">למאגר</button>
+                    </>
+                )}
              </div>
         )}
 
