@@ -58,7 +58,7 @@ const INITIAL_FORM_STATE = {
     image: null, lookingForMinAge: '', lookingForMaxAge: '', lookingForReligiousLevel: ''
 };
 
-// --- פונקציית עזר לשיחה עם Gemini (כולל גיבוי אוטומטי) ---
+// --- פונקציית עזר לשיחה עם Gemini (ללא fallback ידני) ---
 const chatWithGemini = async (history, newMessage, apiKey) => {
   if (!apiKey) throw new Error("חסר מפתח API");
 
@@ -71,14 +71,14 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
     { role: "user", parts: [{ text: newMessage }] }
   ];
 
-  // רשימת מודלים לניסיון לפי סדר עדיפות
-  const modelsToTry = ["gemini-1.5-flash", "gemini-pro", "gemini-1.0-pro"];
+  // רשימת מודלים לניסיון - מודרני ואז קלאסי יציב
+  const modelsToTry = ["gemini-1.5-flash", "gemini-1.0-pro"];
   
   let lastError = null;
 
   for (const model of modelsToTry) {
       try {
-        console.log(`Trying model: ${model}...`);
+        console.log(`Trying AI model: ${model}...`);
         const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -96,26 +96,38 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
         const data = await response.json();
         
         if (!response.ok) {
-            // אם המודל לא נמצא (404), ננסה את הבא בתור
-            if (response.status === 404 || data.error?.message?.includes("not found")) {
+            const errorMsg = data.error?.message || response.statusText;
+            
+            // זיהוי שגיאות קריטיות במפתח - אין טעם לנסות מודל אחר
+            if (errorMsg.includes('API key') || errorMsg.includes('expired') || errorMsg.includes('invalid')) {
+                throw new Error("מפתח ה-API אינו תקין או פג תוקף. נא להחליף מפתח.");
+            }
+
+            // אם סתם לא נמצא המודל, ננסה את הבא
+            if (response.status === 404 || errorMsg.includes("not found")) {
                 console.warn(`Model ${model} not found, trying next...`);
                 continue; 
             }
-            throw new Error(data.error?.message || `שגיאת שרת: ${response.status}`);
+            
+            throw new Error(`שגיאת שרת (${model}): ${errorMsg}`);
         }
         
         if (!data.candidates || data.candidates.length === 0) {
-            throw new Error("המודל לא החזיר תשובה (ייתכן שנחסם בגלל סינון תוכן).");
+            // אם אין תשובה בגלל סינון, זה לא יעזור להחליף מודל בד"כ
+            if (data.promptFeedback?.blockReason) {
+                 throw new Error(`התוכן נחסם ע"י גוגל: ${data.promptFeedback.blockReason}`);
+            }
+            throw new Error("המודל לא החזיר תשובה תקינה.");
         }
 
         const candidate = data.candidates[0];
         if (candidate.finishReason === "SAFETY") {
-            throw new Error("התשובה נחסמה על ידי מסנני הבטיחות.");
+            throw new Error("התשובה נחסמה על ידי מסנני הבטיחות של גוגל.");
         }
 
         const text = candidate.content?.parts?.[0]?.text;
         if (!text) {
-            throw new Error("התקבל מבנה תשובה לא תקין.");
+            throw new Error("התקבל מבנה תשובה לא תקין מהמודל.");
         }
 
         const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
@@ -134,16 +146,13 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
         return { text: cleanText, data: extractedJson };
 
       } catch (error) {
-        console.error(`Error with model ${model}:`, error);
         lastError = error;
-        // אם זו שגיאה שאינה 404, כנראה אין טעם לנסות מודלים אחרים (למשל מפתח שגוי)
-        if (!error.message.includes("not found") && !error.message.includes("404")) {
-            break;
-        }
+        // אם השגיאה קריטית למפתח, עוצרים מיד
+        if (error.message.includes("מפתח")) break;
       }
   }
 
-  throw lastError || new Error("כל המודלים נכשלו. בדוק את המפתח.");
+  throw lastError || new Error("תקלה בחיבור ל-AI. נסה שוב מאוחר יותר.");
 };
 
 // --- מסך הגדרה ראשוני ---
@@ -158,13 +167,7 @@ const SetupScreen = ({ onSave }) => {
       const match = jsonStr.match(/{[\s\S]*}/);
       if (match) jsonStr = match[0];
       
-      let config = null;
-      try {
-        config = JSON.parse(jsonStr.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2": ').replace(/'/g, '"'));
-      } catch (e) {
-        throw new Error("שגיאה בפענוח ה-JSON.");
-      }
-      
+      let config = JSON.parse(jsonStr.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2": ').replace(/'/g, '"'));
       if (!config || !config.apiKey) throw new Error("חסר apiKey בקונפיגורציה.");
       onSave(config);
     } catch (e) { setError(e.message); }
@@ -215,7 +218,7 @@ export default function App() {
   
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
   const [chatMessages, setChatMessages] = useState([
-    { role: 'model', content: 'שלום! אני העוזר החכם של "בניין עדי עד". ספר לי על המועמד/ת ואני אצור כרטיס חדש בענן.' }
+    { role: 'model', content: 'שלום! אני העוזר החכם של "בניין עדי עד". ספר לי על המועמד/ת ואני אצור כרטיס חדש בענן. כשתסיים, אשר את הכרטיס.' }
   ]);
   const [chatInput, setChatInput] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -260,19 +263,15 @@ export default function App() {
   // --- סנכרון נתונים ---
   useEffect(() => {
     if (!db || !user) return;
-    
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'FamilyShidduchDB';
     setLoading(true);
-    const profilesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'profiles');
-    const q = query(profilesCollection);
-
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'profiles'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const loadedProfiles = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       loadedProfiles.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       setProfiles(loadedProfiles);
       setLoading(false);
     }, () => setLoading(false));
-
     return () => unsubscribe();
   }, [db, user]);
 
@@ -285,7 +284,7 @@ export default function App() {
   // --- לוגיקה ---
 
   const handleSaveApiKey = (e) => {
-      const val = e.target.value;
+      const val = e.target.value.trim(); // Trim spaces
       setGeminiKey(val);
       localStorage.setItem('gemini_api_key', val);
   };
@@ -312,9 +311,16 @@ export default function App() {
               setExtractedProfilePreview(prev => ({ ...(prev || {}), ...data }));
           }
       } catch (err) {
-          console.error(err);
+          console.error("Chat Error:", err);
           const cleanError = err.message.replace('Error:', '').trim();
-          setChatMessages(prev => [...prev, { role: 'model', content: `⚠️ שגיאה: ${cleanError}` }]);
+          
+          setChatMessages(prev => [...prev, { role: 'model', content: `⚠️ ${cleanError}` }]);
+          
+          // אם המפתח לא תקין, נציע להחליף אותו מיד
+          if (cleanError.includes('מפתח') || cleanError.includes('API key')) {
+              setGeminiKey('');
+              localStorage.removeItem('gemini_api_key');
+          }
       } finally {
           setIsAiLoading(false);
       }
@@ -331,7 +337,6 @@ export default function App() {
   const handleSaveProfile = async (e) => {
     e.preventDefault();
     if (!db) return;
-
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'FamilyShidduchDB';
     const profileData = {
       ...formData,
@@ -348,17 +353,16 @@ export default function App() {
     try {
       setLoading(true);
       const profilesRef = collection(db, 'artifacts', appId, 'public', 'data', 'profiles');
-
       if (editingId) {
         await updateDoc(doc(profilesRef, editingId), profileData);
-        alert('הכרטיס עודכן בענן!');
+        alert('הכרטיס עודכן!');
       } else {
         await addDoc(profilesRef, { ...profileData, createdAt: Date.now() });
-        alert('הכרטיס נוצר בענן בהצלחה!');
+        alert('הכרטיס נוצר בהצלחה!');
       }
       resetForm();
       setActiveTab('database');
-    } catch (err) { alert('שגיאה בשמירה לענן'); } finally { setLoading(false); }
+    } catch (err) { alert('שגיאה בשמירה'); } finally { setLoading(false); }
   };
 
   const startEditing = (profile) => {
@@ -375,7 +379,7 @@ export default function App() {
 
   const deleteProfile = async (id) => {
     if (!db) return;
-    if (window.confirm('האם למחוק פרופיל זה מהענן?')) {
+    if (window.confirm('למחוק פרופיל זה?')) {
       const appId = typeof __app_id !== 'undefined' ? __app_id : 'FamilyShidduchDB';
       try {
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', id));
@@ -386,7 +390,7 @@ export default function App() {
   };
 
   const handleResetConfig = () => {
-    if(window.confirm('האם לאפס את חיבור הענן?')) {
+    if(window.confirm('לאפס חיבור ענן?')) {
       setFirebaseConfig(null);
       localStorage.removeItem('firebase_config_shidduch');
       setAuthError(null);
@@ -410,7 +414,6 @@ export default function App() {
   const calculateMatchScore = (candidate, target) => {
     let score = 0;
     if (candidate.gender === target.gender) return 0;
-    
     const candAge = candidate.age || 20;
     const minAge = target.lookingFor?.minAge || 18;
     const maxAge = target.lookingFor?.maxAge || 99;
