@@ -71,10 +71,11 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
     { role: "user", parts: [{ text: newMessage }] }
   ];
 
-  // רשימת מודלים מורחבת לגיבוי
-  const modelsToTry = ["gemini-1.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro-latest"];
+  // עדכון רשימת המודלים: gemini-pro הוא היציב ביותר לשימוש כללי
+  // הוספנו אותו ראשון כדי להבטיח הצלחה
+  const modelsToTry = ["gemini-pro", "gemini-1.5-flash", "gemini-1.0-pro"];
   
-  let attemptsLog = []; // לשמירת פירוט השגיאות לדיבוג
+  let attemptsLog = []; 
 
   for (const model of modelsToTry) {
       try {
@@ -99,15 +100,14 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
             const errorMsg = data.error?.message || response.statusText;
             attemptsLog.push(`Model ${model} failed: ${response.status} - ${errorMsg}`);
             
-            // שגיאות קריטיות במפתח - אין טעם להמשיך
             if (response.status === 400 && errorMsg.includes('API key')) {
                  throw new Error("מפתח ה-API לא תקין (INVALID_ARGUMENT). בדוק שהעתקת נכון.");
             }
             if (response.status === 403) {
                  throw new Error("אין הרשאה (403). ייתכן שהמפתח לא הופעל עבור Gemini API ב-Google Cloud Console.");
             }
-
-            // נמשיך למודל הבא רק אם השגיאה היא שהמודל לא נמצא או עמוס
+            
+            // אם המודל לא נמצא או שיש עומס (429), ננסה את הבא
             continue; 
         }
         
@@ -137,7 +137,6 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
         return { text: cleanText, data: extractedJson };
 
       } catch (error) {
-        // אם נזרקה שגיאה יזומה שלנו (כמו מפתח לא תקין), זרוק אותה החוצה מיד
         if (error.message.includes("מפתח") || error.message.includes("הרשאה")) {
             throw error;
         }
@@ -145,7 +144,6 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
       }
   }
 
-  // אם הגענו לפה, הכל נכשל
   throw new Error(`כל המודלים נכשלו.\nפירוט טכני:\n${attemptsLog.join('\n')}`);
 };
 
@@ -159,7 +157,6 @@ const SetupScreen = ({ onSave }) => {
       setError('');
       let jsonStr = configInput.trim();
       
-      // טיפול חכם: אם המשתמש הדביק רק JSON של Firebase
       if (jsonStr.startsWith('{')) {
           const match = jsonStr.match(/{[\s\S]*}/);
           if (match) jsonStr = match[0];
@@ -284,8 +281,7 @@ export default function App() {
   // --- לוגיקה ---
 
   const handleSaveApiKey = (e) => {
-      // ניקוי המפתח מרווחים או תווים מיותרים
-      let val = e.target.value.trim(); 
+      const val = e.target.value.trim(); 
       setGeminiKey(val);
       localStorage.setItem('gemini_api_key', val);
   };
@@ -317,7 +313,6 @@ export default function App() {
           
           setChatMessages(prev => [...prev, { role: 'model', content: `⚠️ שגיאה: ${cleanError}` }]);
           
-          // אם המפתח לא תקין באופן וודאי, נציע להחליף אותו
           if (cleanError.includes('מפתח') || cleanError.includes('API key')) {
               setTimeout(() => {
                   if(window.confirm('נראה שיש בעיה במפתח ה-API. האם לאפס אותו כדי שתוכל להזין חדש?')) {
