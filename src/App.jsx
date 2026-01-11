@@ -58,7 +58,7 @@ const INITIAL_FORM_STATE = {
     image: null, lookingForMinAge: '', lookingForMaxAge: '', lookingForReligiousLevel: ''
 };
 
-// --- פונקציית עזר לשיחה עם Gemini (ללא fallback ידני) ---
+// --- פונקציית עזר לשיחה עם Gemini ---
 const chatWithGemini = async (history, newMessage, apiKey) => {
   if (!apiKey) throw new Error("חסר מפתח API");
 
@@ -71,10 +71,10 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
     { role: "user", parts: [{ text: newMessage }] }
   ];
 
-  // רשימת מודלים לניסיון - מודרני ואז קלאסי יציב
-  const modelsToTry = ["gemini-1.5-flash", "gemini-1.0-pro"];
+  // רשימת מודלים מורחבת לגיבוי
+  const modelsToTry = ["gemini-1.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro-latest"];
   
-  let lastError = null;
+  let attemptsLog = []; // לשמירת פירוט השגיאות לדיבוג
 
   for (const model of modelsToTry) {
       try {
@@ -97,38 +97,29 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
         
         if (!response.ok) {
             const errorMsg = data.error?.message || response.statusText;
+            attemptsLog.push(`Model ${model} failed: ${response.status} - ${errorMsg}`);
             
-            // זיהוי שגיאות קריטיות במפתח - אין טעם לנסות מודל אחר
-            if (errorMsg.includes('API key') || errorMsg.includes('expired') || errorMsg.includes('invalid')) {
-                throw new Error("מפתח ה-API אינו תקין או פג תוקף. נא להחליף מפתח.");
+            // שגיאות קריטיות במפתח - אין טעם להמשיך
+            if (response.status === 400 && errorMsg.includes('API key')) {
+                 throw new Error("מפתח ה-API לא תקין (INVALID_ARGUMENT). בדוק שהעתקת נכון.");
+            }
+            if (response.status === 403) {
+                 throw new Error("אין הרשאה (403). ייתכן שהמפתח לא הופעל עבור Gemini API ב-Google Cloud Console.");
             }
 
-            // אם סתם לא נמצא המודל, ננסה את הבא
-            if (response.status === 404 || errorMsg.includes("not found")) {
-                console.warn(`Model ${model} not found, trying next...`);
-                continue; 
-            }
-            
-            throw new Error(`שגיאת שרת (${model}): ${errorMsg}`);
+            // נמשיך למודל הבא רק אם השגיאה היא שהמודל לא נמצא או עמוס
+            continue; 
         }
         
         if (!data.candidates || data.candidates.length === 0) {
-            // אם אין תשובה בגלל סינון, זה לא יעזור להחליף מודל בד"כ
             if (data.promptFeedback?.blockReason) {
                  throw new Error(`התוכן נחסם ע"י גוגל: ${data.promptFeedback.blockReason}`);
             }
-            throw new Error("המודל לא החזיר תשובה תקינה.");
+            throw new Error("המודל החזיר תשובה ריקה.");
         }
 
-        const candidate = data.candidates[0];
-        if (candidate.finishReason === "SAFETY") {
-            throw new Error("התשובה נחסמה על ידי מסנני הבטיחות של גוגל.");
-        }
-
-        const text = candidate.content?.parts?.[0]?.text;
-        if (!text) {
-            throw new Error("התקבל מבנה תשובה לא תקין מהמודל.");
-        }
+        const text = data.candidates[0].content?.parts?.[0]?.text;
+        if (!text) throw new Error("התקבל מבנה תשובה לא תקין.");
 
         const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
         let extractedJson = null;
@@ -146,13 +137,16 @@ const chatWithGemini = async (history, newMessage, apiKey) => {
         return { text: cleanText, data: extractedJson };
 
       } catch (error) {
-        lastError = error;
-        // אם השגיאה קריטית למפתח, עוצרים מיד
-        if (error.message.includes("מפתח")) break;
+        // אם נזרקה שגיאה יזומה שלנו (כמו מפתח לא תקין), זרוק אותה החוצה מיד
+        if (error.message.includes("מפתח") || error.message.includes("הרשאה")) {
+            throw error;
+        }
+        attemptsLog.push(`Network/Other error on ${model}: ${error.message}`);
       }
   }
 
-  throw lastError || new Error("תקלה בחיבור ל-AI. נסה שוב מאוחר יותר.");
+  // אם הגענו לפה, הכל נכשל
+  throw new Error(`כל המודלים נכשלו.\nפירוט טכני:\n${attemptsLog.join('\n')}`);
 };
 
 // --- מסך הגדרה ראשוני ---
@@ -164,12 +158,18 @@ const SetupScreen = ({ onSave }) => {
     try {
       setError('');
       let jsonStr = configInput.trim();
-      const match = jsonStr.match(/{[\s\S]*}/);
-      if (match) jsonStr = match[0];
       
-      let config = JSON.parse(jsonStr.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2": ').replace(/'/g, '"'));
-      if (!config || !config.apiKey) throw new Error("חסר apiKey בקונפיגורציה.");
-      onSave(config);
+      // טיפול חכם: אם המשתמש הדביק רק JSON של Firebase
+      if (jsonStr.startsWith('{')) {
+          const match = jsonStr.match(/{[\s\S]*}/);
+          if (match) jsonStr = match[0];
+          
+          let config = JSON.parse(jsonStr.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2": ').replace(/'/g, '"'));
+          if (!config || !config.apiKey) throw new Error("חסר apiKey בקונפיגורציה.");
+          onSave(config);
+      } else {
+          throw new Error("יש להדביק את אובייקט הקונפיגורציה של Firebase (מתחיל ב-{).");
+      }
     } catch (e) { setError(e.message); }
   };
 
@@ -178,17 +178,17 @@ const SetupScreen = ({ onSave }) => {
       <div className="bg-white/80 backdrop-blur-xl p-8 rounded-3xl shadow-2xl max-w-lg w-full space-y-6">
         <div className="text-center">
             <h1 className="text-3xl font-extrabold text-indigo-700">חיבור לענן המשפחתי</h1>
-            <p className="text-gray-600 mt-2">אנא הזן את פרטי ה-Firebase כדי להתחיל.</p>
+            <p className="text-gray-600 mt-2">הדבק כאן את ה-<code>firebaseConfig</code> מהמסוף של Firebase.</p>
         </div>
         <textarea
           dir="ltr"
           className="w-full h-40 p-4 border rounded-xl font-mono text-xs bg-gray-900 text-green-400"
-          placeholder={`{ "apiKey": "...", "projectId": "..." }`}
+          placeholder={`{ "apiKey": "AIza...", ... }`}
           value={configInput}
           onChange={(e) => setConfigInput(e.target.value)}
         />
-        {error && <div className="text-red-600 text-sm font-bold">{error}</div>}
-        <button onClick={handleSave} className="w-full py-4 bg-indigo-600 text-white font-bold rounded-xl">התחבר</button>
+        {error && <div className="text-red-600 text-sm font-bold bg-red-50 p-2 rounded">{error}</div>}
+        <button onClick={handleSave} className="w-full py-4 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 transition-colors">התחבר</button>
       </div>
     </div>
   );
@@ -218,7 +218,7 @@ export default function App() {
   
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
   const [chatMessages, setChatMessages] = useState([
-    { role: 'model', content: 'שלום! אני העוזר החכם של "בניין עדי עד". ספר לי על המועמד/ת ואני אצור כרטיס חדש בענן. כשתסיים, אשר את הכרטיס.' }
+    { role: 'model', content: 'שלום! אני העוזר החכם של "בניין עדי עד". ספר לי על המועמד/ת (אפשר להעתיק מהווטסאפ) ואני אצור כרטיס חדש בענן.' }
   ]);
   const [chatInput, setChatInput] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -284,7 +284,8 @@ export default function App() {
   // --- לוגיקה ---
 
   const handleSaveApiKey = (e) => {
-      const val = e.target.value.trim(); // Trim spaces
+      // ניקוי המפתח מרווחים או תווים מיותרים
+      let val = e.target.value.trim(); 
       setGeminiKey(val);
       localStorage.setItem('gemini_api_key', val);
   };
@@ -314,12 +315,16 @@ export default function App() {
           console.error("Chat Error:", err);
           const cleanError = err.message.replace('Error:', '').trim();
           
-          setChatMessages(prev => [...prev, { role: 'model', content: `⚠️ ${cleanError}` }]);
+          setChatMessages(prev => [...prev, { role: 'model', content: `⚠️ שגיאה: ${cleanError}` }]);
           
-          // אם המפתח לא תקין, נציע להחליף אותו מיד
+          // אם המפתח לא תקין באופן וודאי, נציע להחליף אותו
           if (cleanError.includes('מפתח') || cleanError.includes('API key')) {
-              setGeminiKey('');
-              localStorage.removeItem('gemini_api_key');
+              setTimeout(() => {
+                  if(window.confirm('נראה שיש בעיה במפתח ה-API. האם לאפס אותו כדי שתוכל להזין חדש?')) {
+                      setGeminiKey('');
+                      localStorage.removeItem('gemini_api_key');
+                  }
+              }, 1000);
           }
       } finally {
           setIsAiLoading(false);
@@ -627,7 +632,7 @@ export default function App() {
                                     type="password" 
                                     value={geminiKey} 
                                     onChange={handleSaveApiKey} 
-                                    placeholder="הדבק כאן מפתח Gemini API כדי להתחיל..."
+                                    placeholder="הדבק כאן מפתח Gemini API (AIza...) כדי להתחיל..."
                                     className="flex-1 p-3 border rounded-xl bg-gray-50 focus:ring-2 focus:ring-purple-500 outline-none text-sm"
                                  />
                                  <a href="https://aistudio.google.com/app/apikey" target="_blank" className="p-3 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200 text-sm font-bold whitespace-nowrap">השג מפתח</a>
